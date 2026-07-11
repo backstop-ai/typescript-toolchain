@@ -1,0 +1,140 @@
+name: backstop/typescript-toolchain
+version: 1.0.0
+language: typescript
+archetype: enforcement
+description: >
+  Reusable TypeScript/JavaScript native-toolchain MECHANISM pack: runs the
+  ESLint / tsc / Vitest passes through backstop's engine-dispatch substrate and
+  normalizes their output to SARIF (findings) and coverage-records via
+  pack-relative convert scripts. Mechanism only — it carries NO opinionated
+  coding-standards rules beyond the shipped ESLint config (deeper security /
+  correctness opinions live in the separate backstop/typescript-standards pack).
+  Convention: one <lang>-toolchain pack bundles a language's whole native
+  toolchain. Every tool is invoked via `npx --no-install` so it resolves the
+  consumer repo's own node_modules/.bin — the pack is package-manager-agnostic
+  for lint/typecheck (npm, pnpm, yarn, bun all expose node_modules/.bin). The
+  test/coverage engines assume Vitest; a bun variant swaps only those two.
+classification:
+  # File classification: the pack-declared source/test globs the language-neutral
+  # coverage + discovery consumers read INSTEAD of any baked literal. A .ts/.tsx/
+  # .js/.jsx file is "source" ONLY because this block says so; a *.test.* / *.spec.*
+  # / __tests__ file is "test" ONLY because this block says so.
+  source:
+    - "**/*.ts"
+    - "**/*.tsx"
+    - "**/*.mts"
+    - "**/*.cts"
+    - "**/*.js"
+    - "**/*.jsx"
+    - "**/*.mjs"
+    - "**/*.cjs"
+  test:
+    - "**/*.test.ts"
+    - "**/*.test.tsx"
+    - "**/*.test.js"
+    - "**/*.test.jsx"
+    - "**/*.spec.ts"
+    - "**/*.spec.tsx"
+    - "**/*.spec.js"
+    - "**/*.spec.jsx"
+    - "**/__tests__/**"
+# Test-name extraction DATA: the regex whose capture group 1 is the test NAME
+# string — the `it(...)`/`test(...)`/`describe(...)` first argument. Lets the
+# merged TestNameMatcher extract a Vitest/Jest test name with zero baked literal.
+test_name_patterns:
+  - "(?:\\bit|\\btest|\\bdescribe)\\s*\\(\\s*['\"`]([^'\"`]+)"
+engines:
+  # Lint: ESLint as a config-file engine. The pack SHIPS its opinionated flat
+  # config (eslint.config.mjs, passed via --config) so a fresh repo lints from
+  # moment zero with no config to author; --no-config-lookup makes the pack
+  # config authoritative (the consumer's own config is ignored). The plugin
+  # PACKAGES (@eslint/js, typescript-eslint) resolve from the consumer's
+  # node_modules — Node walks up from the pack config's on-disk location, which
+  # sits inside the consumer repo at .backstop/packs/… — so the consumer supplies
+  # the packages and the pack supplies the rules. --no-error-on-unmatched-pattern
+  # keeps an empty repo GREEN instead of erroring. eslint --format json is
+  # normalized to SARIF by scripts/lint-to-sarif.sh.
+  ts-lint:
+    command: npx --no-install eslint --no-config-lookup --no-error-on-unmatched-pattern --format json
+    input_mode: config-file
+    input_flag: "--config"
+    convert: scripts/lint-to-sarif.sh
+    scope_kind: project-wide
+    project_target: "."
+    category: mechanism
+    gate_type: lint
+    crash_guard: true
+  # Typecheck: `tsc --noEmit` reads the consumer's tsconfig.json and typechecks
+  # the whole program. NO project_target — appending a path would make tsc treat
+  # it as a lone input file and IGNORE tsconfig (vacuous green). CrashGuard turns a
+  # non-zero exit with zero parseable diagnostics into a loud failure (tsc crash /
+  # missing tsconfig) instead of a silent pass. exempt_from_scope_filter stamps
+  # type errors project-wide so a change that breaks typechecking in an UNCHANGED
+  # file still REDs a diff-scoped gate. scripts/typecheck-to-sarif.sh parses the
+  # `file(line,col): error TSxxxx: msg` diagnostic lines.
+  ts-typecheck:
+    command: npx --no-install tsc --noEmit
+    input_mode: none
+    convert: scripts/typecheck-to-sarif.sh
+    scope_kind: project-wide
+    category: mechanism
+    gate_type: build
+    crash_guard: true
+    exempt_from_scope_filter: true
+  # Test: `vitest run` with the Jest-compatible JSON reporter written to a FILE
+  # (stdout_artifact) — reading stdout would mix in console output and could
+  # silently green a failing suite. --passWithNoTests keeps a fresh/empty repo
+  # GREEN. CrashGuard turns a vitest crash (non-zero, no parseable failures) into a
+  # loud failure. scripts/test-to-sarif.sh maps each failed assertion to a SARIF
+  # finding on its test file.
+  ts-test:
+    command: npx --no-install vitest run --passWithNoTests --reporter=json --outputFile=.backstop/ts-test-results.json
+    input_mode: none
+    stdout_artifact: .backstop/ts-test-results.json
+    convert: scripts/test-to-sarif.sh
+    scope_kind: project-wide
+    category: mechanism
+    gate_type: test
+    crash_guard: true
+  # Coverage: the coverage PRODUCER runs `vitest run --coverage` (v8, json-summary)
+  # UN-SANDBOXED via the runner (full toolchain, cwd = project root) and folds the
+  # one piece of knowledge the sandboxed convert cannot obtain — the project root
+  # absolute prefix — by rewriting coverage-summary.json's absolute file keys to
+  # repo-relative paths, writing the result to the stdout_artifact. The sandboxed
+  # convert (scripts/coverage-to-records.sh) then normalizes that to per-file
+  # coverage-records stamped metric "statement". gate_type coverage routes the
+  # output to the coverage-records channel, DISTINCT from the SARIF findings channel.
+  ts-coverage:
+    command: npx --no-install vitest run --passWithNoTests --coverage
+    producer: scripts/coverage-produce.sh
+    stdout_artifact: .backstop/ts-coverage/backstop-summary.json
+    input_mode: none
+    convert: scripts/coverage-to-records.sh
+    scope_kind: project-wide
+    category: mechanism
+    gate_type: coverage
+content:
+  ruleset:
+    version: 1.0.0
+    rules:
+      - id: ts-lint
+        engine: ts-lint
+        rule_path: eslint.config.mjs
+        risk_class: correctness
+        category: toolchain
+        justification: Native TS/JS lint pass via ESLint (pack-shipped flat config), normalized to SARIF.
+      - id: ts-typecheck
+        engine: ts-typecheck
+        risk_class: correctness
+        category: toolchain
+        justification: Native TS typecheck pass via tsc --noEmit; diagnostics normalized to SARIF.
+      - id: ts-test
+        engine: ts-test
+        risk_class: correctness
+        category: toolchain
+        justification: Native Vitest test pass; failed assertions normalized to SARIF.
+      - id: ts-coverage
+        engine: ts-coverage
+        risk_class: correctness
+        category: toolchain
+        justification: Native Vitest v8 coverage pass; per-file statement coverage normalized to coverage records.
