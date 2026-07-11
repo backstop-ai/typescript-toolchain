@@ -15,6 +15,7 @@ TypeScript knowledge; this pack is the whole TS toolchain.
 | `ts-typecheck` | `tsc --noEmit` | build | Reads the consumer's `tsconfig.json`. Type errors are project-wide (an unchanged-file break still REDs). |
 | `ts-test` | `vitest run` | test | Jest-compatible JSON reporter; failed assertions → findings on their test file. |
 | `ts-coverage` | `vitest run --coverage` (v8) | coverage | Per-file statement coverage → coverage records. |
+| `ts-audit` | `pnpm audit --json` | findings | Known-vuln dependencies → findings on `package.json` (critical/high = error). **pnpm-specific** — bun/npm variants swap this engine. |
 
 Every tool is invoked via `npx --no-install`, so it resolves the consumer repo's
 own `node_modules/.bin` — the pack is package-manager-agnostic for lint/typecheck
@@ -32,6 +33,15 @@ The pack ships the ESLint **rules**; the consumer supplies the ESLint **packages
 (they resolve from the consumer's `node_modules` because the pack config is loaded
 from inside the consumer repo at `.backstop/packs/…`). The consumer must also have
 a `tsconfig.json` (structural — cannot be pack-owned).
+
+**pnpm note:** pnpm 10+ blocks dependencies' build scripts by default, which breaks
+Vitest (esbuild). Allow it in `pnpm-workspace.yaml` (NOT `package.json` — pnpm 11
+no longer reads `pnpm.onlyBuiltDependencies` there):
+
+```yaml
+onlyBuiltDependencies:
+  - esbuild
+```
 
 Install and gate:
 

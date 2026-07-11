@@ -113,6 +113,21 @@ engines:
     scope_kind: project-wide
     category: mechanism
     gate_type: coverage
+  # Dependency audit: `pnpm audit --json` queries the advisory DB for known-vuln
+  # dependencies; each advisory → a SARIF finding on package.json (critical/high =
+  # error, moderate/low = warning). This is the ONE package-manager-specific engine
+  # (npm/bun audit emit different JSON) — it assumes pnpm (the decided primary
+  # stack); a bun/npm variant swaps the command + convert. CrashGuard turns an audit
+  # error (e.g. no lockfile, registry unreachable) into a loud failure. A clean/empty
+  # audit yields zero findings (GREEN).
+  ts-audit:
+    command: pnpm audit --json
+    input_mode: none
+    convert: scripts/audit-to-sarif.sh
+    scope_kind: project-wide
+    category: mechanism
+    gate_type: findings
+    crash_guard: true
 content:
   ruleset:
     version: 1.0.0
@@ -138,3 +153,8 @@ content:
         risk_class: correctness
         category: toolchain
         justification: Native Vitest v8 coverage pass; per-file statement coverage normalized to coverage records.
+      - id: ts-audit
+        engine: ts-audit
+        risk_class: security
+        category: toolchain
+        justification: Native pnpm dependency audit; known-vuln advisories normalized to SARIF.
