@@ -38,6 +38,19 @@ classification:
     - "**/*.spec.js"
     - "**/*.spec.jsx"
     - "**/__tests__/**"
+    # Non-source support files classified NON-measurable (the `test` bucket = "not
+    # measurable application source", mirroring go-toolchain's **/testdata/**). Build/
+    # tool CONFIG (*.config.*) is tooling, not shipped source; a **/testing/** directory
+    # holds test harnesses/utilities imported only by tests. Without these a config file
+    # or test helper counts as measurable source with no coverage record and LOUDLY fails
+    # the coverage step.
+    - "**/*.config.ts"
+    - "**/*.config.mts"
+    - "**/*.config.cts"
+    - "**/*.config.js"
+    - "**/*.config.mjs"
+    - "**/*.config.cjs"
+    - "**/testing/**"
 # Test-name extraction DATA: the regex whose capture group 1 is the test NAME
 # string — the `it(...)`/`test(...)`/`describe(...)` first argument. Lets the
 # merged TestNameMatcher extract a Vitest/Jest test name with zero baked literal.
