@@ -1,5 +1,5 @@
 name: backstop/typescript-toolchain
-version: 1.0.0
+version: 1.1.0
 language: typescript
 archetype: enforcement
 description: >
@@ -106,8 +106,19 @@ engines:
   # GREEN. CrashGuard turns a vitest crash (non-zero, no parseable failures) into a
   # loud failure. scripts/test-to-sarif.sh maps each failed assertion to a SARIF
   # finding on its test file.
+  #
+  # SINGLE-RUN CONVENTION (pack-side, no core mechanism): this command ALSO carries
+  # the coverage flags, so ONE vitest invocation emits BOTH artifacts — the test
+  # report (--outputFile) AND .backstop/ts-coverage/coverage-summary.json. The
+  # coverage engine's producer (scripts/coverage-produce.sh) REUSES that summary
+  # when it is fresh (not older than the test report — same run wrote both) and
+  # only re-runs vitest as a fallback (coverage-only invocations, staleness, or a
+  # future ordering change). Test dim runs before coverage dim in the sequential
+  # gate, so the normal full-gate path runs the suite ONCE. Which flags combine and
+  # which files appear is TOOLCHAIN knowledge — it lives here, in the pack, by the
+  # thin-executor rule; core never coordinates the sharing.
   ts-test:
-    command: npx --no-install vitest run --passWithNoTests --reporter=json --outputFile=.backstop/ts-test-results.json
+    command: npx --no-install vitest run --passWithNoTests --reporter=json --outputFile=.backstop/ts-test-results.json --coverage --coverage.provider=v8 --coverage.reporter=json-summary --coverage.reportsDirectory=.backstop/ts-coverage --coverage.all
     input_mode: none
     stdout_artifact: .backstop/ts-test-results.json
     convert: scripts/test-to-sarif.sh
