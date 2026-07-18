@@ -55,7 +55,13 @@ classification:
 # string — the `it(...)`/`test(...)`/`describe(...)` first argument. Lets the
 # merged TestNameMatcher extract a Vitest/Jest test name with zero baked literal.
 test_name_patterns:
-  - "(?:\\bit|\\btest|\\bdescribe)\\s*\\(\\s*['\"`]([^'\"`]+)"
+  # Delimiter-aware: capture the test name up to the MATCHING closing quote, so an
+  # apostrophe inside a double-quoted name ("engagement's rows") is NOT truncated. A single
+  # [^'"`] class stops at the first apostrophe and silently drops the rest of the name, so a
+  # mandated name containing "'" is never matched by test_verification (fixed 2026-07-18).
+  - "(?:\\bit|\\btest|\\bdescribe)\\s*\\(\\s*\"([^\"]+)\""
+  - "(?:\\bit|\\btest|\\bdescribe)\\s*\\(\\s*'([^']+)'"
+  - "(?:\\bit|\\btest|\\bdescribe)\\s*\\(\\s*`([^`]+)`"
 engines:
   # Lint: ESLint as a config-file engine. The pack SHIPS its opinionated flat
   # config (eslint.config.mjs, passed via --config) so a fresh repo lints from
