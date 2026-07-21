@@ -1,5 +1,5 @@
 name: backstop/typescript-toolchain
-version: 1.1.0
+version: 1.1.1
 language: typescript
 archetype: enforcement
 description: >
@@ -51,6 +51,15 @@ classification:
     - "**/*.config.mjs"
     - "**/*.config.cjs"
     - "**/testing/**"
+    # Next.js App Router framework ENTRYPOINTS (route.ts) are thin framework glue carrying NO domain
+    # logic — their delegation to route/ingest pure-functions is covered via the app's route tests; they
+    # are unmeasurable in isolation (only exercised by booting the framework runtime), like a config file.
+    # Real components/modules under app/ stay measurable source (only the route entrypoint matches).
+    - "**/app/**/route.ts"
+    # Real-Postgres/DB test-support HARNESS (testcontainers/Docker) — imported only by CI-gated seam/
+    # integration test projects, never executable under the hermetic run, so it can carry no coverage
+    # record (mirrors **/testing/** and go-toolchain's **/testdata/**).
+    - "**/testsupport/**"
 # Test-name extraction DATA: the regex whose capture group 1 is the test NAME
 # string — the `it(...)`/`test(...)`/`describe(...)` first argument. Lets the
 # merged TestNameMatcher extract a Vitest/Jest test name with zero baked literal.
