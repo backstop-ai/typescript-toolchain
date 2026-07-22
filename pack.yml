@@ -1,5 +1,5 @@
 name: backstop/typescript-toolchain
-version: 1.1.1
+version: 1.1.2
 language: typescript
 archetype: enforcement
 description: >
@@ -60,6 +60,12 @@ classification:
     # integration test projects, never executable under the hermetic run, so it can carry no coverage
     # record (mirrors **/testing/** and go-toolchain's **/testdata/**).
     - "**/testsupport/**"
+    # CI-gated real-composition ACCEPTANCE tier — the acceptance vitest project (Docker-backed, e.g. a
+    # live local Supabase stack) runs ONLY as its own gated project, never under the hermetic run. Both
+    # its *.acceptance.test.ts specs and their lifecycle/fixture support modules therefore carry no
+    # hermetic coverage record — the same rationale as the seam **/testsupport/** harness above, applied
+    # to the acceptance tier's own directory.
+    - "**/acceptance/**"
 # Test-name extraction DATA: the regex whose capture group 1 is the test NAME
 # string — the `it(...)`/`test(...)`/`describe(...)` first argument. Lets the
 # merged TestNameMatcher extract a Vitest/Jest test name with zero baked literal.
