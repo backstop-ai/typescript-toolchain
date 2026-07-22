@@ -28,6 +28,11 @@ export default tseslint.config(
       '**/dist/**',
       '**/build/**',
       '**/out/**',
+      // Next.js build output (gitignored, regenerated every `next build`) — never
+      // lint it, exactly like dist/build/out. tsconfig still typechecks the
+      // generated `.next/types/**` route validators; eslint must not lint the
+      // minified chunks / generated files.
+      '**/.next/**',
       '**/coverage/**',
       '**/.backstop/**',
     ],
