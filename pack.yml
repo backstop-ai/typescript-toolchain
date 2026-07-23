@@ -1,5 +1,5 @@
 name: backstop/typescript-toolchain
-version: 1.1.5
+version: 1.1.6
 language: typescript
 archetype: enforcement
 description: >
@@ -61,6 +61,13 @@ classification:
     # in isolation. The page body carries NO domain logic — its data comes from the covered read path and
     # its presentation from a covered pure view helper — so it holds no hermetic coverage record.
     - "**/app/**/page.tsx"
+    # Next.js App Router ROOT LAYOUT components (layout.tsx) are the SAME class of thin framework-runtime-
+    # only glue as route.ts/page.tsx above: a root layout only renders under the framework runtime (it
+    # applies the app-wide font/theme/token shell and imports global CSS), so it is unmeasurable in
+    # isolation and carries NO domain logic — its presentation logic lives in covered pure helpers. Like
+    # page.tsx, it holds no hermetic coverage record; only the layout ENTRYPOINT matches, so a real
+    # component/module under app/ stays measurable source.
+    - "**/app/**/layout.tsx"
     # Real-Postgres/DB test-support HARNESS (testcontainers/Docker) — imported only by CI-gated seam/
     # integration test projects, never executable under the hermetic run, so it can carry no coverage
     # record (mirrors **/testing/** and go-toolchain's **/testdata/**).
