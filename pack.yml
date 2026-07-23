@@ -1,5 +1,5 @@
 name: backstop/typescript-toolchain
-version: 1.1.4
+version: 1.1.5
 language: typescript
 archetype: enforcement
 description: >
@@ -71,6 +71,13 @@ classification:
     # hermetic coverage record — the same rationale as the seam **/testsupport/** harness above, applied
     # to the acceptance tier's own directory.
     - "**/acceptance/**"
+    # CI-gated real-composition BROWSER-E2E tier — a Playwright project (Docker-backed: a live local
+    # Supabase stack + the booted app) that runs ONLY as its own gated project, never under the hermetic
+    # run. Both its *.e2e.test.ts specs and their harness/session/fixture support modules therefore carry
+    # no hermetic coverage record — the exact same rationale as the **/acceptance/** tier above, applied to
+    # a top-level Playwright e2e/ directory (matches `e2e/support/**` etc.; does NOT match `e2e_tier/`,
+    # whose hermetic *.test.ts wiring specs stay in the normal test bucket).
+    - "**/e2e/**"
 # Test-name extraction DATA: the regex whose capture group 1 is the test NAME
 # string — the `it(...)`/`test(...)`/`describe(...)` first argument. Lets the
 # merged TestNameMatcher extract a Vitest/Jest test name with zero baked literal.
