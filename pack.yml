@@ -1,5 +1,5 @@
 name: backstop-ai/typescript-toolchain
-version: "1.2.0"
+version: "1.2.1"
 language: typescript
 archetype: enforcement
 description: >
@@ -151,8 +151,15 @@ engines:
   # gate, so the normal full-gate path runs the suite ONCE. Which flags combine and
   # which files appear is TOOLCHAIN knowledge — it lives here, in the pack, by the
   # thin-executor rule; core never coordinates the sharing.
+  # --exclude '**/.backstop/**' mirrors eslint.config.mjs's own '**/.backstop/**' ignore
+  # (below) — vitest's built-in defaults do NOT cover it (only node_modules/dist/.git/.cache
+  # by default), so without this an installed pack shipping ANY *.test.*-named file under
+  # .backstop/packs/** gets discovered and run as project source. Found live: a consumer
+  # installing bclabs-ai/bclabs-design-system, whose own fixture-proof test imported bun:test
+  # (not Node/vitest-resolvable), crashed this engine outright (v1.2.0, bclabs-brief-builder
+  # standup, 2026-08-04). --exclude ADDS to vitest's defaults, it does not replace them.
   ts-test:
-    command: npx --no-install vitest run --passWithNoTests --reporter=json --outputFile=.backstop/ts-test-results.json --coverage --coverage.provider=v8 --coverage.reporter=json-summary --coverage.reportsDirectory=.backstop/ts-coverage --coverage.all
+    command: npx --no-install vitest run --exclude '**/.backstop/**' --passWithNoTests --reporter=json --outputFile=.backstop/ts-test-results.json --coverage --coverage.provider=v8 --coverage.reporter=json-summary --coverage.reportsDirectory=.backstop/ts-coverage --coverage.all
     input_mode: none
     stdout_artifact: .backstop/ts-test-results.json
     convert: scripts/test-to-sarif.sh
@@ -169,7 +176,7 @@ engines:
   # coverage-records stamped metric "statement". gate_type coverage routes the
   # output to the coverage-records channel, DISTINCT from the SARIF findings channel.
   ts-coverage:
-    command: npx --no-install vitest run --passWithNoTests --coverage
+    command: npx --no-install vitest run --exclude '**/.backstop/**' --passWithNoTests --coverage
     producer: scripts/coverage-produce.sh
     stdout_artifact: .backstop/ts-coverage/backstop-summary.json
     input_mode: none
