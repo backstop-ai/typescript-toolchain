@@ -1,5 +1,5 @@
 name: backstop-ai/typescript-toolchain
-version: "1.2.1"
+version: "1.3.0"
 language: typescript
 archetype: enforcement
 description: >
@@ -85,6 +85,13 @@ classification:
     # a top-level Playwright e2e/ directory (matches `e2e/support/**` etc.; does NOT match `e2e_tier/`,
     # whose hermetic *.test.ts wiring specs stay in the normal test bucket).
     - "**/e2e/**"
+  # Dependency directory names (ISSUE-122): the Node/npm ecosystem's installed-
+  # dependency directory. backstop-core excludes it from artifact-corpus walks ONLY
+  # because this pack declares it here — core carries no ecosystem noun of its own, so
+  # without this declaration a consumer with a node_modules/ tree would have that tree
+  # walked.
+  dependency_dirs:
+    - "node_modules"
 # Test-name extraction DATA: the regex whose capture group 1 is the test NAME
 # string — the `it(...)`/`test(...)`/`describe(...)` first argument. Lets the
 # merged TestNameMatcher extract a Vitest/Jest test name with zero baked literal.
