@@ -45,6 +45,7 @@ if [ "$fresh" -eq 0 ]; then
     --coverage \
     --coverage.provider=v8 \
     --coverage.reporter=json-summary \
+    --coverage.reportOnFailure \
     --coverage.reportsDirectory="$out_dir" \
     --coverage.all \
     >/dev/null 2>&1 || true

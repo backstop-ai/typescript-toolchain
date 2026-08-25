@@ -1,5 +1,5 @@
 name: backstop-ai/typescript-toolchain
-version: "1.3.0"
+version: "1.3.1"
 language: typescript
 archetype: enforcement
 description: >
@@ -166,7 +166,7 @@ engines:
   # (not Node/vitest-resolvable), crashed this engine outright (v1.2.0, bclabs-brief-builder
   # standup, 2026-08-04). --exclude ADDS to vitest's defaults, it does not replace them.
   ts-test:
-    command: npx --no-install vitest run --exclude '**/.backstop/**' --passWithNoTests --reporter=json --outputFile=.backstop/ts-test-results.json --coverage --coverage.provider=v8 --coverage.reporter=json-summary --coverage.reportsDirectory=.backstop/ts-coverage --coverage.all
+    command: npx --no-install vitest run --exclude '**/.backstop/**' --passWithNoTests --reporter=json --outputFile=.backstop/ts-test-results.json --coverage --coverage.provider=v8 --coverage.reporter=json-summary --coverage.reportsDirectory=.backstop/ts-coverage --coverage.all --coverage.reportOnFailure
     input_mode: none
     stdout_artifact: .backstop/ts-test-results.json
     convert: scripts/test-to-sarif.sh
@@ -183,7 +183,7 @@ engines:
   # coverage-records stamped metric "statement". gate_type coverage routes the
   # output to the coverage-records channel, DISTINCT from the SARIF findings channel.
   ts-coverage:
-    command: npx --no-install vitest run --exclude '**/.backstop/**' --passWithNoTests --coverage
+    command: npx --no-install vitest run --exclude '**/.backstop/**' --passWithNoTests --coverage --coverage.reportOnFailure
     producer: scripts/coverage-produce.sh
     stdout_artifact: .backstop/ts-coverage/backstop-summary.json
     input_mode: none
