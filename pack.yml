@@ -1,5 +1,5 @@
 name: backstop-ai/typescript-toolchain
-version: "1.3.2"
+version: "1.3.3"
 language: typescript
 archetype: enforcement
 description: >
@@ -203,13 +203,16 @@ engines:
     gate_type: test
     crash_guard: true
   # Coverage: the coverage PRODUCER runs `vitest run --coverage` (v8, json-summary)
-  # UN-SANDBOXED via the runner (full toolchain, cwd = project root) and folds the
-  # one piece of knowledge the sandboxed convert cannot obtain — the project root
-  # absolute prefix — by rewriting coverage-summary.json's absolute file keys to
-  # repo-relative paths, writing the result to the stdout_artifact. The sandboxed
-  # convert (scripts/coverage-to-records.sh) then normalizes that to per-file
-  # coverage-records stamped metric "statement". gate_type coverage routes the
-  # output to the coverage-records channel, DISTINCT from the SARIF findings channel.
+  # UN-SANDBOXED via the runner (full toolchain, cwd = project root) and folds in
+  # what the sandboxed convert cannot obtain — the project root absolute prefix (by
+  # rewriting coverage-summary.json's absolute file keys to repo-relative paths) and
+  # the consumer's justified coverage exclusions from the tracked
+  # .backstop/coverage-exclusions file (same format and drop rules as go-toolchain's)
+  # — writing the result to the stdout_artifact. The sandboxed convert
+  # (scripts/coverage-to-records.sh) then normalizes that to per-file coverage-records
+  # stamped metric "statement", marking each justified path `excluded: true` with its
+  # justification. gate_type coverage routes the output to the coverage-records
+  # channel, DISTINCT from the SARIF findings channel.
   ts-coverage:
     command: npx --no-install vitest run --exclude '**/.backstop/**' --passWithNoTests --coverage --coverage.reportOnFailure
     producer: scripts/coverage-produce.sh

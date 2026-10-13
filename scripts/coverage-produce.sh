@@ -4,9 +4,10 @@
 # via the runner (cwd = project root) with full toolchain access IN PLACE of the
 # plain engine command. Its job:
 #   1. run the Vitest v8 coverage pass, emitting json-summary; and
-#   2. fold in the one piece of knowledge the sandboxed convert cannot obtain —
-#      the project-root absolute prefix — by rewriting coverage-summary.json's
-#      ABSOLUTE file keys to repo-relative paths.
+#   2. fold in the knowledge the sandboxed convert cannot obtain — the
+#      project-root absolute prefix (by rewriting coverage-summary.json's ABSOLUTE
+#      file keys to repo-relative paths) and the consumer's justified coverage
+#      exclusions (.backstop/coverage-exclusions; see below).
 # It writes the relativized summary to the declared stdout_artifact
 # (.backstop/ts-coverage/backstop-summary.json); the sandboxed convert then parses
 # THAT (it runs no tool). This producer/convert split keeps the executor
@@ -111,13 +112,99 @@ if [ ! -f "$summary" ]; then
   exit 0
 fi
 
+# Fold in the CONSUMER PROJECT's coverage exclusions (parity with go-toolchain's
+# producer; same file, same format, same drop rules).
+#
+# THE DECLARATION IS THE PROJECT'S, NOT THE PACK'S. An exclusion says "this path
+# cannot be measured HERE, for this reason" — a fact about one codebase, such as a
+# Temporal workflow module that runs inside Temporal's isolated workflow bundle,
+# where v8 coverage cannot see it. A list shipped in the pack would impose one
+# consumer's exclusions on every consumer of this toolchain.
+#
+# WHY THE ARTIFACT IS THE CARRIER: the convert (coverage-to-records.sh) is parse-only
+# and runs SANDBOXED, so it cannot read this file. The producer folds the accepted
+# declarations into the artifact under the reserved key
+# "#backstop-coverage-exclusions" (an array of {path, justification}); only a
+# root-level source file with exactly that name could collide with it. The key is
+# written only when at least one declaration is accepted, so a project without the
+# file gets a byte-identical artifact. Both the single-run reuse path and the
+# fallback run reach this point, so both carry the exclusions.
+#
+# FORMAT: <repo-relative-path><TAB><justification>. Blank lines and # comments are
+# ignored. The file is TRACKED in the consumer repo on purpose — a gitignored
+# declaration is invisible config that shapes the gate's verdict without appearing
+# in review.
+#
+# A DECLARATION WITH NO JUSTIFICATION IS DROPPED, NOT HONOURED, AND NOT FATAL. That
+# is the fail-closed choice: an unjustified exclusion never takes effect, so the
+# path stays measured and the threshold still applies. Honouring it would let a bare
+# path silently switch coverage off; exiting non-zero would turn one typo into an
+# outage of the whole coverage dimension. The same applies to a malformed path
+# (absolute, trailing "/", empty/"."/".." segment) and to control characters: none
+# is allowed in the path, and only TAB/VT/FF/CR are allowed in the justification.
+exclusions=".backstop/coverage-exclusions"
+accepted="$out_dir/coverage-exclusions.accepted"
+: > "$accepted"
+if [ -f "$exclusions" ]; then
+  awk '
+    function has_forbidden(s, path_value,   i, c, code) {
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        for (code = 1; code < 32; code++) {
+          if (c != sprintf("%c", code)) continue
+          if (!path_value && (code == 9 || code == 11 || code == 12 || code == 13)) break
+          return 1
+        }
+      }
+      return 0
+    }
+    function valid_path(path,   count, i, part) {
+      if (path == "" || substr(path, 1, 1) == "/" || substr(path, length(path), 1) == "/" || has_forbidden(path, 1)) return 0
+      count = split(path, parts, "/")
+      for (i = 1; i <= count; i++) {
+        part = parts[i]
+        if (part == "" || part == "." || part == "..") return 0
+      }
+      return 1
+    }
+    function valid_reason(reason,   substantive) {
+      if (reason == "" || has_forbidden(reason, 0)) return 0
+      substantive = reason
+      gsub(/ /, "", substantive)
+      gsub(tab, "", substantive)
+      gsub(cr, "", substantive)
+      gsub(ff, "", substantive)
+      gsub(vt, "", substantive)
+      return substantive != ""
+    }
+    BEGIN { tab = sprintf("%c", 9); vt = sprintf("%c", 11); ff = sprintf("%c", 12); cr = sprintf("%c", 13) }
+    $0 == "" || substr($0, 1, 1) == "#" { next }
+    {
+      delimiter = index($0, tab)
+      path = delimiter ? substr($0, 1, delimiter - 1) : ""
+      reason = delimiter ? substr($0, delimiter + 1) : ""
+      if (!delimiter || !valid_path(path) || !valid_reason(reason)) {
+        printf "backstop typescript-toolchain: dropping malformed coverage exclusion; the path stays measured\n" > "/dev/stderr"
+        next
+      }
+      printf "%s\t%s\n", path, reason
+    }
+  ' "$exclusions" > "$accepted"
+fi
+
 # Rewrite absolute file keys to repo-relative by stripping the "$PWD/" prefix. The
 # `total` aggregate key carries no prefix and passes through unchanged (the convert
-# drops it). jq is present in the un-sandboxed producer environment.
-jq --arg pfx "$PWD/" '
-  to_entries
-  | map(.key |= (if startswith($pfx) then .[($pfx | length):] else . end))
-  | from_entries
+# drops it). Then attach the accepted exclusions (one "<path><TAB><reason>" line
+# each; the reason may itself hold a TAB, so only the FIRST tab splits). jq is
+# present in the un-sandboxed producer environment.
+jq --arg pfx "$PWD/" --rawfile accepted "$accepted" '
+  (to_entries
+   | map(.key |= (if startswith($pfx) then .[($pfx | length):] else . end))
+   | from_entries)
+  + ([$accepted | split("\n")[] | select(. != "")
+      | split("\t") | {path: .[0], justification: (.[1:] | join("\t"))}]
+     | if length > 0 then {"#backstop-coverage-exclusions": .} else {} end)
 ' "$summary" > "$artifact"
+rm -f "$accepted"
 
 exit 0

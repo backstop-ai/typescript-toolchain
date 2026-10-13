@@ -18,7 +18,7 @@
 # runs `backstop gate --file` on the throwaway consumer to prove core's verdicts end
 # to end (that step also needs pnpm on PATH, for the ts-audit engine).
 #
-# What it proves (ISSUE-221 / ISSUE-222):
+# What it proves (ISSUE-221 / ISSUE-222 / ISSUE-223):
 #   1. drift: the coverage include globs equal classification.source, the exclude
 #      globs cover classification.test, and the ts-test command and the
 #      coverage-produce.sh fallback carry the same lists;
@@ -29,8 +29,17 @@
 #      types-only module yields a total-0 record, an untested module yields 0/N,
 #      a tested module yields covered > 0, and nothing under tests/ (helpers,
 #      fixtures) yields a record;
-#   4. gate (optional): a types-only file plus a fixture .cjs pass the coverage
-#      step, and an untested module fails it as a 0% gap, not as unmeasured.
+#   4. coverage exclusions (single-run reuse AND fallback): a justified line in
+#      .backstop/coverage-exclusions marks that path's record excluded with the
+#      justification as its reason; a declared path with no summary entry gets a
+#      synthetic excluded record (only for this pack's source extensions, so a
+#      declared .go path yields no record); a line with no justification, or with a control
+#      character in its path or justification, is dropped (with a stderr notice) and
+#      the path stays measured; unlisted paths are unchanged;
+#   5. gate (optional): a types-only file plus a fixture .cjs pass the coverage
+#      step, an untested module fails it as a 0% gap, not as unmeasured, a justified
+#      exclusion passes with a coverage_exclusion warning carrying its reason, and
+#      an unjustified or control-character declaration leaves the path enforced.
 #
 # Exit 0 = every check passed. Requires jq. POSIX sh.
 
@@ -143,7 +152,7 @@ fi
 lint_ids() {
   jq -r --arg p "$proj/$1" '.[] | select(.filePath == $p) | .messages[] | (.ruleId // "fatal")' "$work/lint.json"
 }
-for clean in tests/fixtures/standin/draft.cjs tests/fixtures/standin/checks/slot.cjs scripts/tool.mjs src/used.ts src/untested.ts src/types-only.ts tests/used.test.ts tests/helpers.ts; do
+for clean in tests/fixtures/standin/draft.cjs tests/fixtures/standin/checks/slot.cjs scripts/tool.mjs src/used.ts src/untested.ts src/types-only.ts src/workflow.ts tests/used.test.ts tests/helpers.ts; do
   found=$(lint_ids "$clean" | tr '\n' ' ')
   if [ -z "$found" ]; then
     pass "lint: $clean is clean"
@@ -221,7 +230,84 @@ rm -rf "$proj/.backstop/ts-coverage"
 (cd "$proj" && sh "$installed/scripts/coverage-produce.sh")
 check_records "producer fallback"
 
-# --- 4. gate (optional) ---------------------------------------------------------------
+# --- 4. coverage exclusions ------------------------------------------------------------
+excl_reason="Runs inside the Temporal workflow bundle; v8 coverage cannot see it"
+exclusions="$proj/.backstop/coverage-exclusions"
+{
+  printf '# selftest coverage exclusions\n\n'
+  printf 'src/workflow.ts\t%s\n' "$excl_reason"
+  printf 'src/untested.ts\n'
+  printf 'src/used.ts\tcontrol\001character in the justification\n'
+  printf 'src/ctl\001.ts\tcontrol character in the path\n'
+  printf 'src/absent.ts\tdeclared but never in the summary\n'
+  printf 'pkg/worker/worker.go\tanother toolchain pack answers for this path\n'
+} > "$exclusions"
+
+# check_exclusions <label>: run the producer (stderr captured), convert, assert.
+check_exclusions() {
+  label=$1
+  (cd "$proj" && sh "$installed/scripts/coverage-produce.sh") 2> "$work/produce.err"
+  sh "$pack_dir/scripts/coverage-to-records.sh" < "$proj/.backstop/ts-coverage/backstop-summary.json" > "$work/records.json" 2>/dev/null
+  rec() { jq -c --arg p "$1" '[.[] | select(.path == $p)] | first // empty' "$work/records.json"; }
+  r=$(rec src/workflow.ts)
+  if [ -n "$r" ] && echo "$r" | jq -e --arg why "$excl_reason" '.excluded == true and .measured == true and .total > 0 and .justification == $why' >/dev/null; then
+    pass "exclusions ($label): justified path is excluded with its reason ($r)"
+  else
+    fail "exclusions ($label): justified path needs excluded:true + reason (got: ${r:-none})"
+  fi
+  r=$(rec src/untested.ts)
+  if [ -n "$r" ] && echo "$r" | jq -e '.excluded == false and .covered == 0 and .total > 0 and (has("justification") | not)' >/dev/null; then
+    pass "exclusions ($label): missing-justification line is dropped; path stays measured ($r)"
+  else
+    fail "exclusions ($label): missing-justification path must stay a measured 0/N record (got: ${r:-none})"
+  fi
+  r=$(rec src/used.ts)
+  if [ -n "$r" ] && echo "$r" | jq -e '.excluded == false and .covered > 0' >/dev/null; then
+    pass "exclusions ($label): control character in justification is rejected ($r)"
+  else
+    fail "exclusions ($label): control-character justification must not exclude (got: ${r:-none})"
+  fi
+  if jq -e 'any(.[]; .path | explode | any(. < 32))' "$work/records.json" >/dev/null; then
+    fail "exclusions ($label): a control-character path produced a record"
+  else
+    pass "exclusions ($label): control character in path is rejected"
+  fi
+  r=$(rec src/absent.ts)
+  if [ -n "$r" ] && echo "$r" | jq -e '.excluded == true and .measured == false and .total == 0 and .justification == "declared but never in the summary"' >/dev/null; then
+    pass "exclusions ($label): declared path absent from the summary gets a synthetic excluded record"
+  else
+    fail "exclusions ($label): absent declared path needs a synthetic excluded record (got: ${r:-none})"
+  fi
+  r=$(rec pkg/worker/worker.go)
+  if [ -z "$r" ]; then
+    pass "exclusions ($label): declared non-TS/JS path (.go) yields no record"
+  else
+    fail "exclusions ($label): declared .go path must yield no TS record (got: $r)"
+  fi
+  r=$(rec src/types-only.ts)
+  if [ -n "$r" ] && echo "$r" | jq -e '.excluded == false and .total == 0' >/dev/null; then
+    pass "exclusions ($label): unlisted path is unchanged"
+  else
+    fail "exclusions ($label): unlisted path changed (got: ${r:-none})"
+  fi
+  dropped=$(grep -c 'dropping malformed coverage exclusion' "$work/produce.err")
+  if [ "$dropped" -eq 3 ]; then
+    pass "exclusions ($label): producer reported 3 dropped declarations"
+  else
+    fail "exclusions ($label): producer reported $dropped dropped declarations, want 3"
+  fi
+}
+
+# 4a. single-run reuse: ts-test writes the summary, the producer folds in the exclusions.
+rm -rf "$proj/.backstop/ts-coverage" "$proj/.backstop/ts-test-results.json"
+(cd "$proj" && run_split "$test_cmd") > "$work/test.out" 2>&1
+check_exclusions "single-run reuse"
+# 4b. producer fallback.
+rm -rf "$proj/.backstop/ts-coverage"
+check_exclusions "producer fallback"
+rm -f "$exclusions"
+
+# --- 5. gate (optional) ---------------------------------------------------------------
 if [ -n "$backstop_bin" ]; then
   # Install through backstop itself so backstop.lock is real (the copy above has none).
   rm -rf "$proj/.backstop/packs" "$proj/.backstop/ts-coverage" "$proj/.backstop/ts-test-results.json"
@@ -256,6 +342,26 @@ YML
     pass "gate: untested module fails coverage as a measured 0% gap"
   else
     fail "gate: untested module run exited $status: $(grep -i 'cover' "$work/gate-fail.txt" | head -5 | tr '\n' ' ')"
+  fi
+  # Exclusions end to end: one justified line, one bare line, one with a control character.
+  {
+    printf 'src/workflow.ts\t%s\n' "$excl_reason"
+    printf 'src/untested.ts\n'
+    printf 'src/untested.ts\tcontrol\001character\n'
+  } > "$proj/.backstop/coverage-exclusions"
+  (cd "$proj" && "$backstop_bin" gate --file src/workflow.ts) > "$work/gate-excl.txt" 2>&1
+  status=$?
+  if [ "$status" -eq 0 ] && grep -q 'coverage_exclusion' "$work/gate-excl.txt" && grep -qF "src/workflow.ts (metric statement) is suppressed by a pack-declared exclusion: $excl_reason" "$work/gate-excl.txt"; then
+    pass "gate: justified exclusion passes with a coverage_exclusion warning carrying its reason"
+  else
+    fail "gate: justified exclusion run exited $status: $(grep -i 'cover\|exclu' "$work/gate-excl.txt" | head -5 | tr '\n' ' ')"
+  fi
+  (cd "$proj" && "$backstop_bin" gate --file src/untested.ts) > "$work/gate-unjustified.txt" 2>&1
+  status=$?
+  if [ "$status" -ne 0 ] && grep -q 'src/untested.ts coverage 0/[1-9][0-9]* (statement) below threshold' "$work/gate-unjustified.txt" && ! grep -q 'coverage_exclusion' "$work/gate-unjustified.txt"; then
+    pass "gate: unjustified and control-character declarations leave the path enforced"
+  else
+    fail "gate: unjustified declaration run exited $status: $(grep -i 'cover\|exclu' "$work/gate-unjustified.txt" | head -5 | tr '\n' ' ')"
   fi
 fi
 

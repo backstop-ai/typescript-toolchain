@@ -113,6 +113,44 @@ removed `--coverage.all`, which earlier pack versions relied on), so such files 
 no record at all and failed as `coverage_unmeasured`. The globs work the same on
 Vitest 3.
 
+## Coverage exclusions
+
+Some files cannot be measured by the in-process v8 coverage at all. The first case
+is a Temporal workflow module: Temporal bundles workflow code and runs it inside an
+isolated workflow sandbox, where v8 coverage cannot see it, so it reports as a 0%
+gap no matter how well it is tested. A project declares such files in a **tracked**
+`.backstop/coverage-exclusions` file, the same file and format the go-toolchain pack
+reads:
+
+```text
+# <repo-relative-path><TAB><justification>
+src/workflows/order.ts	Runs inside the Temporal workflow bundle; v8 coverage cannot see it
+```
+
+- Each line is a repo-relative path, a TAB, and a justification. Blank lines and
+  lines starting with `#` are ignored.
+- A listed path's coverage record is marked `excluded: true` and carries the
+  justification. The gate skips its threshold and, when the file is in scope, shows
+  a `coverage_exclusion` **warning** with that reason. A listed path with no
+  coverage entry at all gets a synthetic excluded record (`total: 0`,
+  `measured: false`), so the exclusion still applies. This happens only for this
+  pack's source extensions (`.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`,
+  `.cjs`). Other listed paths, such as `.go` files for the go-toolchain pack that
+  reads the same file, are skipped silently, so the two packs never emit
+  duplicate records.
+- A line **without a justification is dropped, not honoured**. The path stays
+  measured and the threshold still applies, and the producer prints a notice on
+  stderr. The same happens to a malformed path (absolute, trailing `/`, or an empty,
+  `.` or `..` segment) and to any control character in the path or in the
+  justification (TAB, VT, FF and CR are allowed in the justification). A bad line
+  never fails the run.
+- If a path is listed twice, the record keeps its first position and the last
+  justification.
+- Unlisted paths are unchanged.
+
+The list belongs to the project, not the pack: the pack ships no exclusions. Keep
+the file tracked so every exclusion shows up in review.
+
 ## Linting plain JavaScript
 
 The shipped ESLint config declares Node's runtime globals (`console`, `process`,
@@ -138,8 +176,10 @@ sh selftest/run.sh <dir-containing-node_modules> [path/to/backstop]
 It checks that the coverage globs match `classification`, that fixture `.cjs`
 files and Node ESM scripts lint clean (and that real mistakes still fail), and that
 a types-only module yields a `total: 0` record, an untested one `0/N`, and test
-helpers and fixtures none. With a `backstop` binary (and `pnpm` on `PATH`) it also
-gates the throwaway consumer end to end. Run it once per Vitest generation you
+helpers and fixtures none. It also checks coverage exclusions: a justified line
+excludes its path with the reason, and a line with no justification or with a
+control character leaves the path measured. With a `backstop` binary (and `pnpm`
+on `PATH`) it also gates the throwaway consumer end to end. Run it once per Vitest generation you
 support.
 
 ## Known limitations (v1)
