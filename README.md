@@ -82,6 +82,66 @@ coverage/
 .backstop/ts-test-results.json
 ```
 
+## File classification
+
+`classification.source` is every TS/JS extension. `classification.test` marks what
+is **not measurable application source**: test-named files (`*.test.*`,
+`*.spec.*`), `__tests__/`, `tests/`, `fixtures/`, `__fixtures__/`, build/tool
+config (`*.config.*`), test-support and gated-tier directories (`testing/`,
+`testsupport/`, `acceptance/`, `e2e/`) and the Next.js `route.ts` / `page.tsx` /
+`layout.tsx` entrypoints. A helper under `tests/` or a fixture script under
+`fixtures/` (for example a `.cjs` a test runs in a child process) therefore needs
+no coverage record. Classifying them as `test` does not make them hollow tests:
+test-name discovery only reads `it()`/`test()`/`describe()` names, and the
+substantiveness pack's hollow-test rule matches `it()`/`test()` calls wherever they
+are.
+
+## Coverage scope
+
+The coverage run passes `--coverage.include` globs equal to `classification.source`
+and `--coverage.exclude` globs covering `classification.test` (plus `node_modules`,
+`dist`, `build`, `out`, `.next`, `coverage` and `.backstop`). v8 then reports every
+in-scope file, including files no test loads:
+
+- an **untested** module gets a `0/N` record, a real 0% gap below the floor;
+- a **types-only** module (no runtime statements, and never loaded because
+  type-only imports are erased) gets a `total: 0` record, which the gate treats as
+  N/A rather than 0%.
+
+Without these globs, Vitest 4+ reports only the modules tests actually load (it
+removed `--coverage.all`, which earlier pack versions relied on), so such files had
+no record at all and failed as `coverage_unmeasured`. The globs work the same on
+Vitest 3.
+
+## Linting plain JavaScript
+
+The shipped ESLint config declares Node's runtime globals (`console`, `process`,
+`Buffer`, timers, `URL`, `fetch`, `structuredClone`, …) for `.js`/`.jsx`/`.mjs`/
+`.cjs`, as an inline list so the onboarding contract above stays unchanged. `.cjs`
+files are linted as CommonJS: `require`, `module`, `exports`, `__dirname` and
+`__filename` are defined and `@typescript-eslint/no-require-imports` is off there.
+Real undefined names still fail `no-undef`, and `require()` outside `.cjs` still
+fails `no-require-imports`.
+
+## Self-test
+
+`backstop pack test` cannot run this pack's engines: they resolve ESLint and Vitest
+from a consumer's `node_modules`, which a pack checkout does not have. Instead,
+`selftest/run.sh` builds a throwaway consumer from `selftest/project/`, links a
+`node_modules` you supply, and runs the engines exactly as `pack.yml` declares
+them:
+
+```sh
+sh selftest/run.sh <dir-containing-node_modules> [path/to/backstop]
+```
+
+It checks that the coverage globs match `classification`, that fixture `.cjs`
+files and Node ESM scripts lint clean (and that real mistakes still fail), and that
+a types-only module yields a `total: 0` record, an untested one `0/N`, and test
+helpers and fixtures none. With a `backstop` binary (and `pnpm` on `PATH`) it also
+gates the throwaway consumer end to end. Run it once per Vitest generation you
+support.
+
 ## Known limitations (v1)
 
 - **Coverage enforcement is produced but not yet threshold-gated for pack-only

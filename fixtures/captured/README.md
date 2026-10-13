@@ -25,13 +25,14 @@ the suite).
 
 ## Re-capture (regenerate from reality; do not hand-edit)
 
+Run the `ts-test` engine `command:` exactly as `pack.yml` declares it (it carries
+the coverage flags, including the `--coverage.include`/`--coverage.exclude` scope),
+then the producer:
+
 ```sh
 cd ../_harness
 rm -rf .backstop/ts-coverage .backstop/ts-test-results.json
-npx --no-install vitest run --passWithNoTests \
-  --reporter=json --outputFile=.backstop/ts-test-results.json \
-  --coverage --coverage.provider=v8 --coverage.reporter=json-summary \
-  --coverage.reportsDirectory=.backstop/ts-coverage --coverage.all
+# <the ts-test command from pack.yml, verbatim>
 sh ../typescript-toolchain/scripts/coverage-produce.sh
 cp .backstop/ts-test-results.json \
    .backstop/ts-coverage/coverage-summary.json \
@@ -39,4 +40,9 @@ cp .backstop/ts-test-results.json \
    ../typescript-toolchain/fixtures/captured/
 ```
 
-Captured 2026-07-18 (vitest 3.x, coverage-v8, `_harness` @ its then-current state).
+Captured 2026-07-18 (vitest 3.x, coverage-v8, `_harness` @ its then-current state),
+when the command still passed `--coverage.all`. 1.3.2 replaced that flag with
+explicit include/exclude globs (ISSUE-221); the output SHAPE these files pin is
+unchanged. The behavior the new globs add (a total-0 entry for a types-only module,
+a 0/N entry for an untested one) is proven live, on Vitest 3 and 5, by
+`selftest/run.sh` rather than by a frozen capture.

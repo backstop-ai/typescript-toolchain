@@ -1,5 +1,5 @@
 name: backstop-ai/typescript-toolchain
-version: "1.3.1"
+version: "1.3.2"
 language: typescript
 archetype: enforcement
 description: >
@@ -38,6 +38,19 @@ classification:
     - "**/*.spec.js"
     - "**/*.spec.jsx"
     - "**/__tests__/**"
+    # Test-SUPPORT directories holding non-test-named files (ISSUE-222). A `tests/`
+    # tree mirrors `__tests__/`: its helpers (tests/helpers.ts) are imported only by
+    # tests and are not application source. A `fixtures/` / `__fixtures__/` tree holds
+    # inputs a test reads or runs — often plain .js/.cjs scripts executed in a CHILD
+    # process, which the in-process v8 coverage can never measure — so as "source"
+    # each one failed the coverage step with no possible record. Putting these in the
+    # `test` bucket does NOT make them hollow tests: core's IsTestFile only feeds
+    # test-NAME harvesting (test_verification), which reads it()/test()/describe()
+    # names and ignores files without them, and the substantiveness pack's hollow-test
+    # rule matches it()/test() calls wherever they are, independent of classification.
+    - "**/tests/**"
+    - "**/fixtures/**"
+    - "**/__fixtures__/**"
     # Non-source support files classified NON-measurable (the `test` bucket = "not
     # measurable application source", mirroring go-toolchain's **/testdata/**). Build/
     # tool CONFIG (*.config.*) is tooling, not shipped source; a **/testing/** directory
@@ -158,15 +171,30 @@ engines:
   # gate, so the normal full-gate path runs the suite ONCE. Which flags combine and
   # which files appear is TOOLCHAIN knowledge — it lives here, in the pack, by the
   # thin-executor rule; core never coordinates the sharing.
+  #
+  # COVERAGE SCOPE (ISSUE-221): the --coverage.include / --coverage.exclude globs make
+  # v8 report EVERY in-scope file, including ones no test loads. They replace
+  # --coverage.all, which Vitest 4 removed (the CLI silently ignores it there), so on
+  # Vitest 4+ a file no test imported got NO summary entry and core reported it as
+  # `coverage_unmeasured`. With include set, an untested runtime module yields a 0/N
+  # entry (a real 0% gap) and a types-only module — which no test ever loads, since
+  # type-only imports are erased — yields a total-0 entry, which core treats as N/A.
+  # The include list mirrors classification.source exactly; the exclude list mirrors
+  # classification.test exactly, plus the build-output/dependency/report directories
+  # eslint.config.mjs also ignores (node_modules, dist, build, out, .next, coverage,
+  # .backstop). Keep all three in step with classification above — and with the same
+  # lists in scripts/coverage-produce.sh (selftest/run.sh checks the agreement). The
+  # globs are UNQUOTED: core splits this command on whitespace and runs it with no
+  # shell, so nothing expands them and no quoting is needed (none contains a space).
   # --exclude '**/.backstop/**' mirrors eslint.config.mjs's own '**/.backstop/**' ignore
   # (below) — vitest's built-in defaults do NOT cover it (only node_modules/dist/.git/.cache
   # by default), so without this an installed pack shipping ANY *.test.*-named file under
   # .backstop/packs/** gets discovered and run as project source. Found live: a consumer
-  # installing bclabs-ai/bclabs-design-system, whose own fixture-proof test imported bun:test
-  # (not Node/vitest-resolvable), crashed this engine outright (v1.2.0, bclabs-brief-builder
-  # standup, 2026-08-04). --exclude ADDS to vitest's defaults, it does not replace them.
+  # installing another pack whose own fixture-proof test imported bun:test (not
+  # Node/vitest-resolvable) crashed this engine outright (v1.2.0, 2026-08-04).
+  # --exclude ADDS to vitest's defaults, it does not replace them.
   ts-test:
-    command: npx --no-install vitest run --exclude '**/.backstop/**' --passWithNoTests --reporter=json --outputFile=.backstop/ts-test-results.json --coverage --coverage.provider=v8 --coverage.reporter=json-summary --coverage.reportsDirectory=.backstop/ts-coverage --coverage.all --coverage.reportOnFailure
+    command: npx --no-install vitest run --exclude '**/.backstop/**' --passWithNoTests --reporter=json --outputFile=.backstop/ts-test-results.json --coverage --coverage.provider=v8 --coverage.reporter=json-summary --coverage.reportsDirectory=.backstop/ts-coverage --coverage.reportOnFailure --coverage.include=**/*.ts --coverage.include=**/*.tsx --coverage.include=**/*.mts --coverage.include=**/*.cts --coverage.include=**/*.js --coverage.include=**/*.jsx --coverage.include=**/*.mjs --coverage.include=**/*.cjs --coverage.exclude=**/*.test.ts --coverage.exclude=**/*.test.tsx --coverage.exclude=**/*.test.js --coverage.exclude=**/*.test.jsx --coverage.exclude=**/*.spec.ts --coverage.exclude=**/*.spec.tsx --coverage.exclude=**/*.spec.js --coverage.exclude=**/*.spec.jsx --coverage.exclude=**/__tests__/** --coverage.exclude=**/tests/** --coverage.exclude=**/fixtures/** --coverage.exclude=**/__fixtures__/** --coverage.exclude=**/*.config.ts --coverage.exclude=**/*.config.mts --coverage.exclude=**/*.config.cts --coverage.exclude=**/*.config.js --coverage.exclude=**/*.config.mjs --coverage.exclude=**/*.config.cjs --coverage.exclude=**/testing/** --coverage.exclude=**/app/**/route.ts --coverage.exclude=**/app/**/page.tsx --coverage.exclude=**/app/**/layout.tsx --coverage.exclude=**/testsupport/** --coverage.exclude=**/acceptance/** --coverage.exclude=**/e2e/** --coverage.exclude=**/node_modules/** --coverage.exclude=**/dist/** --coverage.exclude=**/build/** --coverage.exclude=**/out/** --coverage.exclude=**/.next/** --coverage.exclude=**/coverage/** --coverage.exclude=**/.backstop/**
     input_mode: none
     stdout_artifact: .backstop/ts-test-results.json
     convert: scripts/test-to-sarif.sh

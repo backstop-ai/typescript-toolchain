@@ -1,0 +1,5 @@
+{
+  "name": "typescript-toolchain-selftest",
+  "private": true,
+  "type": "module"
+}

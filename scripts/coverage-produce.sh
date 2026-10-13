@@ -12,9 +12,19 @@
 # THAT (it runs no tool). This producer/convert split keeps the executor
 # language-blind AND the convert toolchain-free. POSIX sh.
 #
-# --coverage.all instruments every source file (even untested ones) so a file with
-# NO tests surfaces as 0%-covered (a real coverage gap) instead of being silently
-# absent. --passWithNoTests keeps a fresh/empty repo GREEN (exit 0, empty summary).
+# COVERAGE SCOPE (ISSUE-221): the --coverage.include / --coverage.exclude globs below
+# make v8 report every in-scope file, including files no test loads. Those globs —
+# not --coverage.all, which Vitest 4 removed and its CLI silently ignores — are what
+# keep an untested file from being silently ABSENT from the summary (absent means no
+# record, which core reports as `coverage_unmeasured`). With include set:
+#   - an untested runtime module gets a 0/N entry: a real 0% coverage gap; and
+#   - a types-only module (no runtime statements; never loaded, since type-only
+#     imports are erased) gets a total-0 entry, which core treats as N/A, not 0%.
+# The include list mirrors pack.yml classification.source and the exclude list
+# mirrors classification.test, plus the build-output/dependency/report directories
+# eslint.config.mjs ignores. They must match the ts-test engine command in pack.yml
+# (selftest/run.sh checks the agreement). --passWithNoTests keeps a fresh/empty repo
+# GREEN (exit 0, empty summary).
 
 out_dir=.backstop/ts-coverage
 summary="$out_dir/coverage-summary.json"
@@ -40,14 +50,57 @@ fi
 if [ "$fresh" -eq 0 ]; then
   # Run the coverage pass. Tolerate a non-zero exit — a failing suite still yields
   # a usable summary; the gate decides the verdict, never this producer.
+  # --exclude '**/.backstop/**' keeps installed packs' own test files (this pack's
+  # selftest/ among them) out of the consumer's suite — the same exclusion the
+  # ts-test and ts-coverage engine commands in pack.yml carry (v1.2.1).
   npx --no-install vitest run \
+    --exclude '**/.backstop/**' \
     --passWithNoTests \
     --coverage \
     --coverage.provider=v8 \
     --coverage.reporter=json-summary \
     --coverage.reportOnFailure \
     --coverage.reportsDirectory="$out_dir" \
-    --coverage.all \
+    '--coverage.include=**/*.ts' \
+    '--coverage.include=**/*.tsx' \
+    '--coverage.include=**/*.mts' \
+    '--coverage.include=**/*.cts' \
+    '--coverage.include=**/*.js' \
+    '--coverage.include=**/*.jsx' \
+    '--coverage.include=**/*.mjs' \
+    '--coverage.include=**/*.cjs' \
+    '--coverage.exclude=**/*.test.ts' \
+    '--coverage.exclude=**/*.test.tsx' \
+    '--coverage.exclude=**/*.test.js' \
+    '--coverage.exclude=**/*.test.jsx' \
+    '--coverage.exclude=**/*.spec.ts' \
+    '--coverage.exclude=**/*.spec.tsx' \
+    '--coverage.exclude=**/*.spec.js' \
+    '--coverage.exclude=**/*.spec.jsx' \
+    '--coverage.exclude=**/__tests__/**' \
+    '--coverage.exclude=**/tests/**' \
+    '--coverage.exclude=**/fixtures/**' \
+    '--coverage.exclude=**/__fixtures__/**' \
+    '--coverage.exclude=**/*.config.ts' \
+    '--coverage.exclude=**/*.config.mts' \
+    '--coverage.exclude=**/*.config.cts' \
+    '--coverage.exclude=**/*.config.js' \
+    '--coverage.exclude=**/*.config.mjs' \
+    '--coverage.exclude=**/*.config.cjs' \
+    '--coverage.exclude=**/testing/**' \
+    '--coverage.exclude=**/app/**/route.ts' \
+    '--coverage.exclude=**/app/**/page.tsx' \
+    '--coverage.exclude=**/app/**/layout.tsx' \
+    '--coverage.exclude=**/testsupport/**' \
+    '--coverage.exclude=**/acceptance/**' \
+    '--coverage.exclude=**/e2e/**' \
+    '--coverage.exclude=**/node_modules/**' \
+    '--coverage.exclude=**/dist/**' \
+    '--coverage.exclude=**/build/**' \
+    '--coverage.exclude=**/out/**' \
+    '--coverage.exclude=**/.next/**' \
+    '--coverage.exclude=**/coverage/**' \
+    '--coverage.exclude=**/.backstop/**' \
     >/dev/null 2>&1 || true
 fi
 
