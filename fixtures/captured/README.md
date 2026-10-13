@@ -23,7 +23,13 @@ the basis of the single-run convention (the ts-test command carries the coverage
 flags; the coverage producer reuses the summary when fresh instead of re-running
 the suite).
 
-## Re-capture (regenerate from reality; do not hand-edit)
+Path normalization (1.3.4): the absolute `_harness` root in the two raw captures was
+rewritten from the capturing machine's real path to the placeholder `/repo/_harness`.
+That is the ONLY edit; every value and the shape are otherwise as captured, and the
+relativized `backstop-summary.json` keys (relative to that root) are unchanged. Apply
+the same normalization after any re-capture so no machine-specific path is committed.
+
+## Re-capture (regenerate from reality; do not hand-edit beyond the path normalization)
 
 Run the `ts-test` engine `command:` exactly as `pack.yml` declares it (it carries
 the coverage flags, including the `--coverage.include`/`--coverage.exclude` scope),
