@@ -13,7 +13,7 @@ TypeScript knowledge; this pack is the whole TS toolchain.
 |---|---|---|---|
 | `ts-lint` | `eslint --format json` | lint | Pack-shipped opinionated flat config (`eslint.config.mjs`), authoritative via `--no-config-lookup`. |
 | `ts-typecheck` | `tsc --noEmit` | build | Reads the consumer's `tsconfig.json`. Type errors are project-wide (an unchanged-file break still REDs). |
-| `ts-test` | `vitest run` | test | Jest-compatible JSON reporter; failed assertions → findings on their test file. |
+| `ts-test` | `vitest run` | test | Jest-compatible JSON reporter; failed assertions → findings on their test file. Test failures are project-wide (a failing test in an unchanged file still REDs a diff-scoped gate). |
 | `ts-coverage` | `vitest run --coverage` (v8) | coverage | Per-file statement coverage → coverage records. |
 | `ts-audit` | `pnpm audit --json` | findings | Known-vuln dependencies → findings on `package.json` (critical/high = error). **pnpm-specific** — bun/npm variants swap this engine. |
 

@@ -1,5 +1,5 @@
 name: backstop-ai/typescript-toolchain
-version: "1.3.4"
+version: "1.3.5"
 language: typescript
 archetype: enforcement
 description: >
@@ -161,6 +161,11 @@ engines:
   # loud failure. scripts/test-to-sarif.sh maps each failed assertion to a SARIF
   # finding on its test file.
   #
+  # exempt_from_scope_filter: each failure is located on its TEST file, which a
+  # diff-scoped gate would otherwise drop whenever the change touched only source.
+  # The suite runs project-wide, so a change that breaks a test in an UNCHANGED file
+  # must still RED a diff-scoped gate (the same reasoning as ts-typecheck above).
+  #
   # SINGLE-RUN CONVENTION (pack-side, no core mechanism): this command ALSO carries
   # the coverage flags, so ONE vitest invocation emits BOTH artifacts — the test
   # report (--outputFile) AND .backstop/ts-coverage/coverage-summary.json. The
@@ -202,6 +207,7 @@ engines:
     category: mechanism
     gate_type: test
     crash_guard: true
+    exempt_from_scope_filter: true
   # Coverage: the coverage PRODUCER runs `vitest run --coverage` (v8, json-summary)
   # UN-SANDBOXED via the runner (full toolchain, cwd = project root) and folds in
   # what the sandboxed convert cannot obtain — the project root absolute prefix (by

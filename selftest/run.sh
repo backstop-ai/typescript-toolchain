@@ -18,7 +18,7 @@
 # runs `backstop gate --file` on the throwaway consumer to prove core's verdicts end
 # to end (that step also needs pnpm on PATH, for the ts-audit engine).
 #
-# What it proves (ISSUE-221 / ISSUE-222 / ISSUE-223):
+# What it proves (ISSUE-221 / ISSUE-222 / ISSUE-223, and test-failure scope):
 #   1. drift: the coverage include globs equal classification.source, the exclude
 #      globs cover classification.test, and the ts-test command and the
 #      coverage-produce.sh fallback carry the same lists;
@@ -73,6 +73,13 @@ ln -s "$toolchain_dir/node_modules" "$proj/node_modules"
 installed="$proj/.backstop/packs/backstop-ai/typescript-toolchain"
 mkdir -p "$installed"
 cp -R "$pack_dir/pack.yml" "$pack_dir/eslint.config.mjs" "$pack_dir/scripts" "$installed/"
+
+# The ts-test engine must be exempt from diff-scope filtering (see pack.yml).
+if awk '/^  ts-test:/{f=1;next} f&&/^  [a-z]/{f=0} f&&/exempt_from_scope_filter: true/{found=1} END{exit !found}' "$pack_dir/pack.yml"; then
+  pass "drift: ts-test declares exempt_from_scope_filter: true"
+else
+  fail "drift: ts-test does not declare exempt_from_scope_filter: true"
+fi
 
 # --- pack.yml readers --------------------------------------------------------
 # classification_list <source|test>: the quoted globs under that classification key.
@@ -363,6 +370,32 @@ YML
   else
     fail "gate: unjustified declaration run exited $status: $(grep -i 'cover\|exclu' "$work/gate-unjustified.txt" | head -5 | tr '\n' ' ')"
   fi
+  # Test failures survive diff-scope filtering: a failing test in a file the
+  # scoped change never touched must still RED the gate (exempt_from_scope_filter).
+  cat > "$proj/tests/out-of-scope.test.ts" <<'TS'
+import { expect, it } from 'vitest'
+
+it('an out-of-scope test failure still reds a scoped gate', () => {
+  expect(1).toBe(2)
+})
+TS
+  # pack_engines is off above (other engines are not under test there); enable it here.
+  # `pack add` rewrites backstop.yml, so drop the pack_engines policy entry in either form.
+  awk '/^ *pack_engines: *\{ *level: *"?off"? *\} *$/ {next}
+       /^ *pack_engines: *$/ {skip=1; next}
+       skip && /^ *level:/ {skip=0; next}
+       {skip=0; print}' "$proj/backstop.yml" > "$work/backstop-oos.yml"
+  cp "$proj/backstop.yml" "$work/backstop-saved.yml"
+  cp "$work/backstop-oos.yml" "$proj/backstop.yml"
+  (cd "$proj" && "$backstop_bin" gate --file src/types-only.ts) > "$work/gate-oos.txt" 2>&1
+  status=$?
+  if [ "$status" -ne 0 ] && grep -q 'an out-of-scope test failure still reds a scoped gate' "$work/gate-oos.txt"; then
+    pass "gate: a failing test outside the scoped files still fails the gate"
+  else
+    fail "gate: out-of-scope test failure run exited $status: $(grep -i 'fail\|vitest' "$work/gate-oos.txt" | head -5 | tr '\n' ' ')"
+  fi
+  rm -f "$proj/tests/out-of-scope.test.ts"
+  cp "$work/backstop-saved.yml" "$proj/backstop.yml"
 fi
 
 if [ "$failures" -eq 0 ]; then
