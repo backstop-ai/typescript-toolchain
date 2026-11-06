@@ -314,6 +314,369 @@ rm -rf "$proj/.backstop/ts-coverage"
 check_exclusions "producer fallback"
 rm -f "$exclusions"
 
+# --- 6. diff-scoped selection --------------------------------------------------------
+# The ts-test engine is project-wide with scope_handoff: file and a producer: core
+# runs scripts/test-produce.sh with the declared command's arguments and hands the
+# gate scope over in BACKSTOP_SCOPE_MODE / BACKSTOP_SCOPE_FILE. These checks drive
+# the producer exactly that way.
+if echo "$test_cmd" | tr ' ' '\n' | grep -qx run && ! echo "$test_cmd" | tr ' ' '\n' | grep -qx -- '--'; then
+  pass "selection: the declared ts-test command contains 'run' and no lone --"
+else
+  fail "selection: the declared ts-test command must contain 'run' and no lone --"
+fi
+if awk '/^  ts-test:/{f=1;next} f&&/^  [a-z]/{f=0} f&&/scope_kind: project-wide/{k=1} f&&/scope_handoff: file/{h=1} END{exit !(k&&h)}' "$pack_dir/pack.yml"; then
+  pass "selection: ts-test declares scope_kind: project-wide and scope_handoff: file"
+else
+  fail "selection: ts-test must declare scope_kind: project-wide and scope_handoff: file"
+fi
+classification_list source | sed 's/^\*\*\/\*//' | sort > "$work/source-ext.txt"
+sed -n "s/^const SOURCE_EXTENSIONS = \[\(.*\)\];$/\1/p" "$pack_dir/scripts/test-select.mjs" | tr -d "' " | tr ',' '\n' | sort > "$work/select-ext.txt"
+if [ -s "$work/select-ext.txt" ] && diff "$work/source-ext.txt" "$work/select-ext.txt" >/dev/null; then
+  pass "selection: test-select.mjs source extensions equal classification.source"
+else
+  fail "selection: test-select.mjs source extensions differ from classification.source"
+fi
+
+# Selection reads git only to check that the opt-in file is tracked.
+printf 'node_modules\n.backstop/packs/\n.backstop/ts-coverage/\n.backstop/ts-test-results.json\n' > "$proj/.gitignore"
+gitp() { git -C "$proj" -c user.name=selftest -c user.email=selftest@example.invalid "$@"; }
+gitp init -q
+gitp add -A >/dev/null 2>&1
+gitp commit -q -m selftest-base >/dev/null 2>&1
+base_sha=$(gitp rev-parse HEAD)
+# A test that imports nothing from src/, so no source change can select it.
+cat > "$proj/tests/standalone.test.ts" <<'TS'
+import { expect, it } from 'vitest'
+
+it('adds without any source module', () => {
+  expect(1 + 1).toBe(2)
+})
+TS
+results="$proj/.backstop/ts-test-results.json"
+cov_summary="$proj/.backstop/ts-coverage/coverage-summary.json"
+handoff="$work/scope-handoff"
+# produce_env <mode|-> [scope path...]: run the producer the way core does. Mode -
+# sets no variables (an older core); all sets no file; diff and file write the
+# paths NUL-terminated to a file outside the project. stdout is discarded.
+produce_env() {
+  mode=$1
+  shift
+  rm -f "$results" "$cov_summary"
+  : > "$handoff"
+  for p in "$@"; do printf '%s\0' "$p" >> "$handoff"; done
+  (
+    cd "$proj" || exit 2
+    set -f
+    set -- $(echo "$test_cmd" | cut -d ' ' -f 2-)
+    case $mode in
+      -) "$installed/scripts/test-produce.sh" "$@" ;;
+      all) BACKSTOP_SCOPE_MODE=all "$installed/scripts/test-produce.sh" "$@" ;;
+      *) BACKSTOP_SCOPE_MODE=$mode BACKSTOP_SCOPE_FILE=$handoff "$installed/scripts/test-produce.sh" "$@" ;;
+    esac
+  ) > "$work/produce.out" 2>&1
+  produce_status=$?
+}
+produce() { produce_env diff "$@"; }
+ran() { jq -r '[.testResults[].name | sub(".*/tests/"; "tests/")] | sort | join(" ")' "$results"; }
+scope_mode() { jq -r '.backstopScope.mode' "$results"; }
+scope_reason() { jq -r '.backstopScope.reason' "$results"; }
+warnings() { sh "$pack_dir/scripts/test-to-sarif.sh" < "$results" 2>/dev/null | jq '[.runs[0].results[] | select(.level == "warning" and .ruleId == "vitest-diff-scoped")] | length'; }
+errors() { sh "$pack_dir/scripts/test-to-sarif.sh" < "$results" 2>/dev/null | jq '[.runs[0].results[] | select(.level == "error")] | length'; }
+full_suite="tests/standalone.test.ts tests/used.test.ts"
+scope_config="$proj/.backstop/ts-test-scope"
+# set_config <printf-format>: write the scope config and track it.
+set_config() { printf "$1" > "$scope_config" && gitp add -- .backstop/ts-test-scope; }
+# expect_mode <mode> <label> <scope path...> (a diff scope)
+expect_mode() {
+  want=$1 label=$2
+  shift 2
+  produce "$@"
+  if [ "$(scope_mode)" = "$want" ]; then
+    pass "selection: $label"
+  else
+    fail "selection: $label (got $(scope_mode) over [$(ran)]: $(scope_reason))"
+  fi
+}
+
+# 6a. opt-in, and a scope core actually handed over.
+produce src/used.ts
+if [ "$(scope_mode)" = full ] && [ "$(ran)" = "$full_suite" ] && [ "$(warnings)" -eq 0 ]; then
+  pass "selection: without .backstop/ts-test-scope the run is full and carries no warning"
+else
+  fail "selection: opt-out run was $(scope_mode) over [$(ran)] ($(tail -c 300 "$work/produce.out"))"
+fi
+printf '# selftest\n' > "$scope_config"
+expect_mode full "an untracked .backstop/ts-test-scope does not opt in" src/used.ts
+set_config '# selftest\nignore\tdocs/**\n'
+produce_env - src/used.ts
+if [ "$(scope_mode)" = full ] && [ "$(ran)" = "$full_suite" ] && [ "$(warnings)" -eq 0 ]; then
+  pass "selection: with no scope handed over (an older core) the run is full"
+else
+  fail "selection: no-handoff run was $(scope_mode) over [$(ran)]: $(scope_reason)"
+fi
+produce_env all src/used.ts
+if [ "$(scope_mode)" = full ] && [ "$(ran)" = "$full_suite" ]; then
+  pass "selection: an --all scope runs the full suite"
+else
+  fail "selection: all-mode run was $(scope_mode) over [$(ran)]: $(scope_reason)"
+fi
+(
+  cd "$proj" && set -f && set -- $(echo "$test_cmd" | cut -d ' ' -f 2-)
+  rm -f "$results"
+  BACKSTOP_SCOPE_MODE=diff "$installed/scripts/test-produce.sh" "$@"
+) > "$work/produce.out" 2>&1
+if [ "$(scope_mode)" = full ]; then
+  pass "selection: a diff mode with no scope file falls back to the full suite"
+else
+  fail "selection: diff mode without a file was $(scope_mode): $(scope_reason)"
+fi
+printf 'src/used.ts' > "$handoff"
+(
+  cd "$proj" && set -f && set -- $(echo "$test_cmd" | cut -d ' ' -f 2-)
+  rm -f "$results"
+  BACKSTOP_SCOPE_MODE=diff BACKSTOP_SCOPE_FILE=$handoff "$installed/scripts/test-produce.sh" "$@"
+) > "$work/produce.out" 2>&1
+if [ "$(scope_mode)" = full ]; then
+  pass "selection: a scope file that is not NUL-terminated falls back to the full suite"
+else
+  fail "selection: unterminated scope file was $(scope_mode): $(scope_reason)"
+fi
+
+# 6b. a changed source file runs only the tests that import it, and says so.
+produce src/used.ts
+if [ "$(scope_mode)" = scoped ] && [ "$(ran)" = "tests/used.test.ts" ] && [ "$(warnings)" -eq 1 ]; then
+  pass "selection: a changed source file runs only its importing tests, with one warning"
+else
+  fail "selection: scoped run was $(scope_mode) over [$(ran)], $(warnings) warning(s) ($(tail -c 300 "$work/produce.out"))"
+fi
+if [ -f "$cov_summary" ] && [ ! "$cov_summary" -ot "$results" ]; then
+  pass "selection: the scoped run's coverage summary is not older than its report (coverage reuses it)"
+else
+  fail "selection: coverage summary missing or older than the annotated report"
+fi
+(cd "$proj" && sh "$installed/scripts/coverage-produce.sh")
+check_records "scoped-run reuse"
+produce_env file src/used.ts
+if [ "$(scope_mode)" = scoped ] && [ "$(ran)" = "tests/used.test.ts" ]; then
+  pass "selection: a file-mode scope selects the same way"
+else
+  fail "selection: file-mode run was $(scope_mode) over [$(ran)]: $(scope_reason)"
+fi
+# 6c. a changed test file runs itself.
+produce tests/standalone.test.ts
+if [ "$(scope_mode)" = scoped ] && [ "$(ran)" = "tests/standalone.test.ts" ]; then
+  pass "selection: a changed test file runs itself"
+else
+  fail "selection: changed-test run was $(scope_mode) over [$(ran)]"
+fi
+# 6d. a failing selected test is still an error finding.
+cat > "$proj/tests/used-fails.test.ts" <<'TS'
+import { expect, it } from 'vitest'
+import { overall } from '../src/used'
+
+it('a selected failing test still fails', () => {
+  expect(overall({ round: 1, slot: 1 }, 4)).toBe(-1)
+})
+TS
+produce src/used.ts
+if [ "$(scope_mode)" = scoped ] && [ "$(errors)" -ge 1 ] && echo "$(ran)" | grep -q 'tests/used-fails.test.ts'; then
+  pass "selection: a failing test the diff selects is still an error finding"
+else
+  fail "selection: failing selected test produced $(errors) error(s) over [$(ran)]"
+fi
+rm -f "$proj/tests/used-fails.test.ts"
+# 6d2. a narrowed run never lets its warning stand in for a crash.
+# (A) every selected test passes, but vitest exits non-zero on an unhandled error.
+cat > "$proj/tests/used-unhandled.test.ts" <<'TS'
+import { expect, it } from 'vitest'
+import { overall } from '../src/used'
+
+it('passes but leaves an unhandled error behind', async () => {
+  expect(overall({ round: 1, slot: 1 }, 4)).toBe(1)
+  setTimeout(() => {
+    throw new Error('unhandled after the test passed')
+  }, 0)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+})
+TS
+produce src/used.ts
+if [ "$produce_status" -ne 0 ] && [ -f "$results" ] && [ "$(jq -r '.backstopScope // "absent"' "$results")" = absent ] && [ "$(warnings)" -eq 0 ]; then
+  pass "selection: a scoped run that exits non-zero with every test passing is left unannotated (no warning to mask the crash)"
+else
+  fail "selection: non-zero scoped run was annotated or exited $produce_status ($(tail -c 300 "$work/produce.out"))"
+fi
+rm -f "$proj/tests/used-unhandled.test.ts"
+# (B) vitest dies before writing a report: no stale report may survive.
+echo '{"numTotalTests":1,"success":true,"testResults":[{"name":"stale","status":"passed","assertionResults":[]}]}' > "$results"
+printf 'export default {{{ not valid\n' > "$proj/vitest.config.ts"
+(
+  cd "$proj" || exit 2
+  set -f
+  set -- $(echo "$test_cmd" | cut -d ' ' -f 2-)
+  printf 'src/used.ts\0' > "$handoff"
+  BACKSTOP_SCOPE_MODE=diff BACKSTOP_SCOPE_FILE=$handoff "$installed/scripts/test-produce.sh" "$@"
+) > "$work/produce.out" 2>&1
+crash_status=$?
+if [ "$crash_status" -ne 0 ] && [ ! -f "$results" ]; then
+  pass "selection: a run that dies before writing its report leaves no report (the stale one is gone)"
+else
+  fail "selection: crashed run exited $crash_status and left a report: $(head -c 200 "$results" 2>/dev/null)"
+fi
+rm -f "$proj/vitest.config.ts"
+# (C) a scope file that is not valid UTF-8 runs the full suite.
+printf 'src/\377bad.ts\0' > "$handoff"
+(
+  cd "$proj" || exit 2
+  set -f
+  set -- $(echo "$test_cmd" | cut -d ' ' -f 2-)
+  rm -f "$results"
+  BACKSTOP_SCOPE_MODE=diff BACKSTOP_SCOPE_FILE=$handoff "$installed/scripts/test-produce.sh" "$@"
+) > "$work/produce.out" 2>&1
+if [ "$(scope_mode)" = full ] && scope_reason | grep -q 'reading the scope file failed'; then
+  pass "selection: a scope file that is not valid UTF-8 falls back to the full suite"
+else
+  fail "selection: non-UTF-8 scope file gave $(scope_mode): $(scope_reason)"
+fi
+# 6e. nothing in scope that can change a result.
+produce
+if [ "$(scope_mode)" = none ] && [ "$(ran)" = "" ] && [ "$(warnings)" -eq 1 ] && [ "$(cat "$cov_summary")" = "{}" ]; then
+  pass "selection: an empty scope runs nothing, writes an empty summary, and warns"
+else
+  fail "selection: empty-scope run was $(scope_mode) over [$(ran)]: $(scope_reason)"
+fi
+mkdir -p "$proj/docs" && echo notes > "$proj/docs/notes.md"
+expect_mode none "an ignored path alone runs nothing" docs/notes.md
+expect_mode none "a deleted test file alone runs nothing" tests/gone.test.ts
+# 6f. every path the import graph cannot see falls back to the full suite.
+echo 'readme' > "$proj/README.md"
+for scope in package.json README.md src/deleted.ts tsconfig.json pnpm-lock.yaml vitest.config.ts .backstop/ts-test-scope src/__mocks__/used.ts src/__tests__/helper.ts; do
+  produce src/used.ts "$scope"
+  if [ "$(scope_mode)" = full ] && [ "$(ran)" = "$full_suite" ] && [ "$(warnings)" -eq 0 ]; then
+    pass "selection: $scope in scope falls back to the full suite"
+  else
+    fail "selection: $scope in scope ran $(scope_mode) over [$(ran)]: $(scope_reason)"
+  fi
+done
+mkdir -p "$proj/src/__mocks__" && echo 'export const overall = () => 0' > "$proj/src/__mocks__/used.ts"
+expect_mode full "an existing __mocks__ module falls back to the full suite" src/__mocks__/used.ts
+rm -rf "$proj/src/__mocks__"
+expect_mode full "a directory in the scope falls back to the full suite" src
+set_config 'ignore\t**\n'
+expect_mode full "ignore ** cannot hide package.json" package.json
+# 6g. a rename: core's scope carries both sides; the old path is gone from disk.
+set_config '# selftest\n'
+gitp mv src/used.ts src/core.ts
+expect_mode full "a renamed source module (both sides in scope) falls back to the full suite" src/core.ts src/used.ts
+gitp mv src/core.ts src/used.ts
+# 6h. testdata paths reach the selection (core hands the list over unfiltered).
+mkdir -p "$proj/testdata" && echo '{}' > "$proj/testdata/input.json"
+expect_mode full "a testdata change falls back to the full suite" testdata/input.json
+set_config 'map\ttestdata/**\ttests/used.test.ts\n'
+produce testdata/input.json
+if [ "$(scope_mode)" = scoped ] && [ "$(ran)" = "tests/used.test.ts" ]; then
+  pass "selection: map testdata/** fires on a testdata change"
+else
+  fail "selection: testdata map run was $(scope_mode) over [$(ran)]: $(scope_reason)"
+fi
+rm -rf "$proj/testdata"
+# 6i. non-ASCII and dash-leading paths.
+set_config '# selftest\n'
+printf "export const accent = () => 'e'\n" > "$proj/src/café.ts"
+cat > "$proj/tests/accent.test.ts" <<'TS'
+import { expect, it } from 'vitest'
+import { accent } from '../src/café'
+
+it('reads a non-ASCII module', () => {
+  expect(accent()).toBe('e')
+})
+TS
+produce 'src/café.ts'
+if [ "$(scope_mode)" = scoped ] && [ "$(ran)" = "tests/accent.test.ts" ]; then
+  pass "selection: a non-ASCII scope path selects its importing test"
+else
+  fail "selection: non-ASCII path run was $(scope_mode) over [$(ran)]: $(scope_reason)"
+fi
+rm -f "$proj/src/café.ts" "$proj/tests/accent.test.ts"
+printf "export const dash = () => 1\n" > "$proj/-dash.ts"
+cat > "$proj/tests/dash.test.ts" <<'TS'
+import { expect, it } from 'vitest'
+import { dash } from '../-dash'
+
+it('reads a module whose name starts with a dash', () => {
+  expect(dash()).toBe(1)
+})
+TS
+produce -dash.ts
+if [ "$(scope_mode)" = scoped ] && [ "$(ran)" = "tests/dash.test.ts" ]; then
+  pass "selection: scope paths that start with - are paths, not flags"
+else
+  fail "selection: dash path run was $(scope_mode) over [$(ran)]: $(scope_reason)"
+fi
+rm -f "$proj/-dash.ts" "$proj/tests/dash.test.ts"
+# 6j. declarations.
+set_config 'always\ttests/standalone.test.ts\nmap\tdocs/**\ttests/used.test.ts\n'
+produce docs/notes.md
+if [ "$(scope_mode)" = scoped ] && [ "$(ran)" = "$full_suite" ]; then
+  pass "selection: map and always declarations add their tests"
+else
+  fail "selection: map/always run was $(scope_mode) over [$(ran)]"
+fi
+set_config 'always\ttests/no-such-*.test.ts\n'
+expect_mode full "a declared glob matching no file falls back to the full suite" src/used.ts
+set_config 'bogus\tsrc/**\n'
+expect_mode full "a malformed .backstop/ts-test-scope falls back to the full suite" src/used.ts
+# 6k. a selection too large for the vitest related command line runs full.
+set_config '# selftest\n'
+mkdir -p "$proj/src/gen"
+i=0
+while [ $i -le 2000 ]; do
+  : > "$proj/src/gen/m$i.ts"
+  i=$((i + 1))
+done
+(cd "$proj" && ls src/gen | sed 's|^|src/gen/|') > "$work/gen.txt"
+# shellcheck disable=SC2046 # one argument per generated path, none with spaces.
+produce $(cat "$work/gen.txt")
+if [ "$(scope_mode)" = full ]; then
+  pass "selection: more than 2000 selected paths fall back to the full suite"
+else
+  fail "selection: oversized selection was $(scope_mode): $(scope_reason)"
+fi
+rm -rf "$proj/src/gen"
+# 6l. the --exclude=<glob> form keeps a test under .backstop/ out of the full run.
+mkdir -p "$proj/.backstop/stray"
+cat > "$proj/.backstop/stray/stray.test.ts" <<'TS'
+import { it } from 'vitest'
+
+it('must never run from .backstop', () => {
+  throw new Error('collected from .backstop')
+})
+TS
+(cd "$proj" && run_split "$test_cmd") > "$work/test.out" 2>&1
+if jq -e '[.testResults[].name | select(contains("/.backstop/"))] | length == 0' "$results" >/dev/null 2>&1 && jq -e '.testResults | length > 0' "$results" >/dev/null 2>&1; then
+  pass "selection: --exclude=**/.backstop/** keeps a test under .backstop/ out of the run"
+else
+  fail "selection: a test under .backstop/ ran ($(tail -c 300 "$work/test.out"))"
+fi
+rm -rf "$proj/.backstop/stray"
+# 6m. a project in a subdirectory of its repository: core's paths are relative to
+# the project root, and the tracked check runs from there.
+mono="$work/mono"
+mkdir -p "$mono/sub/.backstop" "$mono/sub/tests"
+printf '# selftest\n' > "$mono/sub/.backstop/ts-test-scope"
+printf "import { it } from 'vitest'\n\nit('x', () => {})\n" > "$mono/sub/tests/x.test.ts"
+git -C "$mono" init -q
+git -C "$mono" add -A >/dev/null 2>&1
+git -C "$mono" -c user.name=selftest -c user.email=selftest@example.invalid commit -q -m mono >/dev/null 2>&1
+printf 'tests/x.test.ts\0' > "$work/mono-scope"
+sub_decision=$(node "$installed/scripts/test-select.mjs" "$mono/sub" diff "$work/mono-scope" | tr '\n' ' ')
+if [ "$sub_decision" = "$(printf 'scoped\t1 path(s) handed to vitest related tests/x.test.ts ')" ]; then
+  pass "selection: a project in a subdirectory of its repository selects from root-relative paths"
+else
+  fail "selection: subdirectory project gave [$sub_decision]"
+fi
+gitp reset -q --hard "$base_sha"
+rm -rf "$scope_config" "$proj/tests/standalone.test.ts" "$proj/docs" "$proj/README.md" "$results" "$proj/.backstop/ts-coverage" "$proj/.gitignore"
+
 # --- 5. gate (optional) ---------------------------------------------------------------
 if [ -n "$backstop_bin" ]; then
   # Install through backstop itself so backstop.lock is real (the copy above has none).
@@ -395,6 +758,146 @@ TS
     fail "gate: out-of-scope test failure run exited $status: $(grep -i 'fail\|vitest' "$work/gate-oos.txt" | head -5 | tr '\n' ' ')"
   fi
   rm -f "$proj/tests/out-of-scope.test.ts"
+  # With selection opted in, the same out-of-scope failure is NOT run by a scoped
+  # gate on a core that hands the scope over (the documented trade; `gate --all`
+  # still runs it), and the gate carries the selection warning instead of a silent
+  # pass. On a core that does not know scope_handoff, no scope is handed over and
+  # the run must be the full suite, so the failure still REDs the gate. Which core
+  # this is shows in the report's own selection reason. A failure the scope selects
+  # REDs either way.
+  printf '# selftest\n' > "$proj/.backstop/ts-test-scope"
+  git -C "$proj" add -- .backstop/ts-test-scope
+  cat > "$proj/tests/out-of-scope.test.ts" <<'TS'
+import { expect, it } from 'vitest'
+
+it('an out-of-scope test failure still reds a scoped gate', () => {
+  expect(1).toBe(2)
+})
+TS
+  (cd "$proj" && "$backstop_bin" gate --file src/types-only.ts) > "$work/gate-scoped.txt" 2>&1
+  status=$?
+  gate_mode=$(jq -r '.backstopScope.mode // "missing"' "$proj/.backstop/ts-test-results.json" 2>/dev/null)
+  gate_reason=$(jq -r '.backstopScope.reason // ""' "$proj/.backstop/ts-test-results.json" 2>/dev/null)
+  # Which core is this? Decided independently of the run under test: a core that
+  # knows scope_handoff rejects an unknown value in pack check, an older one
+  # ignores the key. A manifest without the key must pass on both.
+  probe="$work/handoff-probe"
+  mkdir -p "$probe/ok" "$probe/bogus"
+  for v in ok bogus; do
+    line=""
+    [ "$v" = bogus ] && line="    scope_handoff: bogus"
+    cat > "$probe/$v/pack.yml" <<YML
+name: acme/handoff-probe
+version: 1.0.0
+language: generic
+archetype: enforcement
+description: probe for scope_handoff support
+engines:
+  tool:
+    command: true
+    input_mode: none
+    scope_kind: project-wide
+    gate_type: findings
+    exempt_from_scope_filter: true
+$line
+content:
+  ruleset:
+    version: 1.0.0
+    rules:
+      - id: marker
+        engine: tool
+        risk_class: correctness
+YML
+  done
+  # pack check reports its verdict on its status line (it exits 0 either way).
+  if "$backstop_bin" pack check "$probe/ok" 2>&1 | grep -qx 'status: pass' && "$backstop_bin" pack check "$probe/bogus" 2>&1 | grep -qx 'status: fail'; then
+    core_supports_handoff=1
+  else
+    core_supports_handoff=0
+  fi
+  if [ "$core_supports_handoff" -eq 0 ]; then
+    if [ "$gate_mode" = full ] && [ "$status" -ne 0 ] && grep -q 'an out-of-scope test failure still reds a scoped gate' "$work/gate-scoped.txt" && ! grep -q 'vitest-diff-scoped' "$work/gate-scoped.txt"; then
+      pass "gate: on a core without scope_handoff, an opted-in gate runs the full suite and fails on the unreached test"
+    else
+      fail "gate: older-core opted-in gate exited $status in mode $gate_mode: $(grep -i 'vitest\|fail' "$work/gate-scoped.txt" | head -5 | tr '\n' ' ')"
+    fi
+  else
+    case $gate_reason in
+      *"handed over no gate scope"*)
+        fail "gate: a core that supports scope_handoff handed over no gate scope ($gate_reason)"
+        ;;
+      *)
+        if [ "$gate_mode" = scoped ] && [ "$status" -eq 0 ] && grep -q 'vitest-diff-scoped' "$work/gate-scoped.txt"; then
+          pass "gate: an opted-in scoped gate skips an unreached test and reports the selection warning"
+        else
+          fail "gate: opted-in scoped gate exited $status in mode $gate_mode ($gate_reason): $(grep -i 'vitest\|fail' "$work/gate-scoped.txt" | head -5 | tr '\n' ' ')"
+        fi
+        ;;
+    esac
+  fi
+  (cd "$proj" && "$backstop_bin" gate --all) > "$work/gate-all.txt" 2>&1
+  status=$?
+  if [ "$status" -ne 0 ] && grep -q 'an out-of-scope test failure still reds a scoped gate' "$work/gate-all.txt" && ! grep -q 'vitest-diff-scoped' "$work/gate-all.txt"; then
+    pass "gate: --all still runs the full suite (no selection warning) and fails on the unreached test"
+  else
+    fail "gate: --all with selection opted in exited $status: $(grep -i 'vitest\|fail' "$work/gate-all.txt" | head -5 | tr '\n' ' ')"
+  fi
+  rm -f "$proj/tests/out-of-scope.test.ts"
+  # A crash is never a pass: an unhandled error with every test passing, and a
+  # vitest that dies before writing its report, both fail the opted-in gate —
+  # for that reason, against a baseline where the same gate passes.
+  (cd "$proj" && "$backstop_bin" gate --file src/used.ts) > "$work/gate-crash-baseline.txt" 2>&1
+  status=$?
+  if [ "$status" -eq 0 ]; then
+    pass "gate: baseline — the opted-in gate over src/used.ts passes before any crash is planted"
+  else
+    fail "gate: baseline opted-in gate over src/used.ts exited $status: $(grep -i 'fail\|vitest\|crash' "$work/gate-crash-baseline.txt" | head -5 | tr '\n' ' ')"
+  fi
+  cat > "$proj/tests/used-unhandled.test.ts" <<'TS'
+import { expect, it } from 'vitest'
+import { overall } from '../src/used'
+
+it('passes but leaves an unhandled error behind', async () => {
+  expect(overall({ round: 1, slot: 1 }, 4)).toBe(1)
+  setTimeout(() => {
+    throw new Error('unhandled after the test passed')
+  }, 0)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+})
+TS
+  (cd "$proj" && "$backstop_bin" gate --file src/used.ts) > "$work/gate-unhandled.txt" 2>&1
+  status=$?
+  if [ "$status" -ne 0 ] && grep -q 'crashed: non-zero exit with no parseable findings' "$work/gate-unhandled.txt"; then
+    pass "gate: a run that exits non-zero with every test passing fails the opted-in gate as a crash"
+  else
+    fail "gate: an unhandled vitest error passed the opted-in gate: $(grep -i 'vitest\|crash\|warning' "$work/gate-unhandled.txt" | head -5 | tr '\n' ' ')"
+  fi
+  rm -f "$proj/tests/used-unhandled.test.ts"
+  printf 'export default {{{ not valid\n' > "$proj/vitest.config.ts"
+  (cd "$proj" && "$backstop_bin" gate --file src/used.ts) > "$work/gate-crash.txt" 2>&1
+  status=$?
+  if [ "$status" -ne 0 ] && grep -q 'stdout_artifact' "$work/gate-crash.txt" && grep -q 'not produced' "$work/gate-crash.txt"; then
+    pass "gate: a vitest that dies before writing its report fails the opted-in gate on the missing report"
+  else
+    fail "gate: a crashed vitest passed the opted-in gate: $(grep -i 'vitest\|artifact' "$work/gate-crash.txt" | head -5 | tr '\n' ' ')"
+  fi
+  rm -f "$proj/vitest.config.ts"
+  cat > "$proj/tests/used-fails.test.ts" <<'TS'
+import { expect, it } from 'vitest'
+import { overall } from '../src/used'
+
+it('a selected failing test still reds a scoped gate', () => {
+  expect(overall({ round: 1, slot: 1 }, 4)).toBe(-1)
+})
+TS
+  (cd "$proj" && "$backstop_bin" gate --file src/used.ts) > "$work/gate-selected.txt" 2>&1
+  status=$?
+  if [ "$status" -ne 0 ] && grep -q 'a selected failing test still reds a scoped gate' "$work/gate-selected.txt"; then
+    pass "gate: a failing test the scope selects still fails an opted-in scoped gate"
+  else
+    fail "gate: selected failing test run exited $status: $(grep -i 'vitest\|fail' "$work/gate-selected.txt" | head -5 | tr '\n' ' ')"
+  fi
+  rm -f "$proj/tests/used-fails.test.ts" "$proj/.backstop/ts-test-scope"
   cp "$work/backstop-saved.yml" "$proj/backstop.yml"
 fi
 

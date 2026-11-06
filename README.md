@@ -13,7 +13,7 @@ TypeScript knowledge; this pack is the whole TS toolchain.
 |---|---|---|---|
 | `ts-lint` | `eslint --format json` | lint | Pack-shipped opinionated flat config (`eslint.config.mjs`), authoritative via `--no-config-lookup`. |
 | `ts-typecheck` | `tsc --noEmit` | build | Reads the consumer's `tsconfig.json`. Type errors are project-wide (an unchanged-file break still REDs). |
-| `ts-test` | `vitest run` | test | Jest-compatible JSON reporter; failed assertions → findings on their test file. Test failures are project-wide (a failing test in an unchanged file still REDs a diff-scoped gate). |
+| `ts-test` | `vitest run` | test | Jest-compatible JSON reporter; failed assertions → findings on their test file. Test failures are project-wide (a failing test in an unchanged file still REDs a diff-scoped gate). Opt-in diff-scoped selection: see below. |
 | `ts-coverage` | `vitest run --coverage` (v8) | coverage | Per-file statement coverage → coverage records. |
 | `ts-audit` | `pnpm audit --json` | findings | Known-vuln dependencies → findings on `package.json` (critical/high = error). **pnpm-specific** — bun/npm variants swap this engine. |
 
@@ -193,3 +193,75 @@ support.
   least one source file (or a tolerant tsconfig) at moment zero.
 - Vitest's JSON reporter does not emit per-assertion line numbers by default, so
   test findings are file-scoped (startLine 1).
+
+## Diff-scoped tests (opt-in)
+
+By default `ts-test` runs the whole suite in every gate. A consumer whose suite is
+slow can opt in to running only the tests a diff can affect, by **tracking** a
+`.backstop/ts-test-scope` file in git (an empty file is enough; an untracked one
+does not count). `backstop gate --all` always runs the whole suite, so run it at
+milestones.
+
+The engine is `scope_kind: project-wide` with `scope_handoff: file` and a producer,
+`scripts/test-produce.sh`. Its command line never carries scope paths. Core hands
+the gate scope over in the environment: `BACKSTOP_SCOPE_MODE` (`diff`, `file` or
+`all`) and, for `diff` and `file`, `BACKSTOP_SCOPE_FILE`, a file of
+project-root-relative paths that includes deleted paths, both sides of a rename,
+and `testdata` paths. A Backstop core that does not know `scope_handoff` sets
+neither variable, and the run is the full suite, so this pack version is safe on
+an older core: it only narrows on a core that hands the scope over. `scripts/test-select.mjs` (which
+runs no test, only a read-only `git ls-files` check that the scope file is
+tracked) decides:
+
+- **full**: the whole suite, as before. This happens when the scope file is
+  missing or untracked, when core hands over no scope or the whole project
+  (`gate --all`), when the scope file is malformed, when the selection would be
+  too large for one `vitest related` command line, and whenever a scope path is
+  something the import graph cannot account for: `package.json`, a lockfile,
+  `pnpm-workspace.yaml`, `.npmrc`, `tsconfig*.json`, `jsconfig*.json`, a
+  `vitest`/`vite` config, anything under `__mocks__/`, the scope file itself, a
+  directory, any path that does not exist (a deleted or renamed module or fixture;
+  only a deleted `*.test.*`/`*.spec.*` file is exempt), or any other non-source
+  file that is not declared below.
+- **scoped**: `vitest related --run` over the changed source and test files, plus
+  the declared `always` and `map` tests. `vitest related` follows static imports
+  only.
+- **none**: the scope is empty, or every scope path is ignored or a deleted test
+  file: nothing runs.
+
+A scoped or none run adds one **warning** finding (`vitest-diff-scoped`) that says
+how many test files ran, so a narrowed run never reads as a full-suite pass.
+
+```text
+# <directive><TAB><glob>[<TAB><test-glob>]
+always	tests/architecture*.test.ts
+ignore	docs/**
+full	compose.yml
+map	db/**/*.sql	tests/db*.test.ts
+```
+
+- `always`: tests that run in every scoped run. Use it for tests that read source
+  files as text (architecture and scan tests): the import graph cannot see that
+  dependency.
+- `ignore`: paths that can never change a test result. It cannot hide the
+  built-in full triggers above.
+- `full`: paths that force the whole suite.
+- `map`: when a changed path matches the first glob, run the tests matching the
+  second. Use it for SQL, JSON and other files that tests read, `testdata`
+  included.
+- `**` matches across directories; `*` and `?` stay within one path segment. A glob
+  that matches no file, or an unknown directive, makes the run full.
+- `always` and `map` test globs never match files under `node_modules/` or a hidden
+  directory (such as `.backstop/`): those are never collected as tests. A changed
+  path under the project's own top-level `node_modules/` is ignored by selection.
+
+**What a scoped run does not cover.** A failing test that the diff does not reach
+is not run, so it does not fail that gate; `gate --all` still catches it. The
+selection cannot see dependencies outside the static import graph: files read at
+runtime, scripts run in a child process, computed `import()` paths, environment
+variables and services. The non-source cases fall back to full unless declared,
+but a changed **source** file that tests reach only that way (for example a
+`.cjs` script a test runs in a child process, or a vitest `globalSetup` module)
+selects nothing on its own. Declare those with `full` or `map`. A newly added
+module that changes how an existing import resolves (for example a new
+`index.ts` beside an existing file of the same name) is not detected.

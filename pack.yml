@@ -1,5 +1,5 @@
 name: backstop-ai/typescript-toolchain
-version: "1.3.5"
+version: "1.4.0"
 language: typescript
 archetype: enforcement
 description: >
@@ -197,13 +197,33 @@ engines:
   # .backstop/packs/** gets discovered and run as project source. Found live: a consumer
   # installing another pack whose own fixture-proof test imported bun:test (not
   # Node/vitest-resolvable) crashed this engine outright (v1.2.0, 2026-08-04).
-  # --exclude ADDS to vitest's defaults, it does not replace them.
+  # --exclude ADDS to vitest's defaults, it does not replace them. It is written in the
+  # --exclude=<glob> form: core runs the command with no shell, so a quoted value
+  # would reach vitest with its quotes.
+  #
+  # DIFF-SCOPED SELECTION (scope_handoff: file + producer). The engine stays
+  # project-wide, so its command line never carries scope paths (a large --all scope
+  # cannot hit the argument limit), and core hands the gate scope over in the
+  # environment: BACKSTOP_SCOPE_MODE, and for diff and file scopes BACKSTOP_SCOPE_FILE
+  # (NUL-terminated, project-root-relative, unfiltered). Selection is OPT-IN: with no
+  # tracked .backstop/ts-test-scope the run is FULL, as before, and so it is on a core
+  # that does not know scope_handoff (it ignores the key and sets no variables).
+  # scripts/test-produce.sh asks scripts/test-select.mjs (it runs no test) for a
+  # decision: FULL (the declared command unchanged: no opt-in, no handed-over scope,
+  # `gate --all`, and any change the import graph cannot account for), SCOPED
+  # (`vitest related --run` over the changed source/test files plus the consumer's
+  # `always` and `map` tests), or NONE (nothing in scope can change a test result). A
+  # narrowed run adds one WARNING finding, so it never reads as a full-suite pass.
+  # exempt_from_scope_filter is unchanged: a failure in a selected test is still
+  # reported wherever its file is.
   ts-test:
-    command: npx --no-install vitest run --exclude '**/.backstop/**' --passWithNoTests --reporter=json --outputFile=.backstop/ts-test-results.json --coverage --coverage.provider=v8 --coverage.reporter=json-summary --coverage.reportsDirectory=.backstop/ts-coverage --coverage.reportOnFailure --coverage.include=**/*.ts --coverage.include=**/*.tsx --coverage.include=**/*.mts --coverage.include=**/*.cts --coverage.include=**/*.js --coverage.include=**/*.jsx --coverage.include=**/*.mjs --coverage.include=**/*.cjs --coverage.exclude=**/*.test.ts --coverage.exclude=**/*.test.tsx --coverage.exclude=**/*.test.js --coverage.exclude=**/*.test.jsx --coverage.exclude=**/*.spec.ts --coverage.exclude=**/*.spec.tsx --coverage.exclude=**/*.spec.js --coverage.exclude=**/*.spec.jsx --coverage.exclude=**/__tests__/** --coverage.exclude=**/tests/** --coverage.exclude=**/fixtures/** --coverage.exclude=**/__fixtures__/** --coverage.exclude=**/*.config.ts --coverage.exclude=**/*.config.mts --coverage.exclude=**/*.config.cts --coverage.exclude=**/*.config.js --coverage.exclude=**/*.config.mjs --coverage.exclude=**/*.config.cjs --coverage.exclude=**/testing/** --coverage.exclude=**/app/**/route.ts --coverage.exclude=**/app/**/page.tsx --coverage.exclude=**/app/**/layout.tsx --coverage.exclude=**/testsupport/** --coverage.exclude=**/acceptance/** --coverage.exclude=**/e2e/** --coverage.exclude=**/node_modules/** --coverage.exclude=**/dist/** --coverage.exclude=**/build/** --coverage.exclude=**/out/** --coverage.exclude=**/.next/** --coverage.exclude=**/coverage/** --coverage.exclude=**/.backstop/**
+    command: npx --no-install vitest run --exclude=**/.backstop/** --passWithNoTests --reporter=json --outputFile=.backstop/ts-test-results.json --coverage --coverage.provider=v8 --coverage.reporter=json-summary --coverage.reportsDirectory=.backstop/ts-coverage --coverage.reportOnFailure --coverage.include=**/*.ts --coverage.include=**/*.tsx --coverage.include=**/*.mts --coverage.include=**/*.cts --coverage.include=**/*.js --coverage.include=**/*.jsx --coverage.include=**/*.mjs --coverage.include=**/*.cjs --coverage.exclude=**/*.test.ts --coverage.exclude=**/*.test.tsx --coverage.exclude=**/*.test.js --coverage.exclude=**/*.test.jsx --coverage.exclude=**/*.spec.ts --coverage.exclude=**/*.spec.tsx --coverage.exclude=**/*.spec.js --coverage.exclude=**/*.spec.jsx --coverage.exclude=**/__tests__/** --coverage.exclude=**/tests/** --coverage.exclude=**/fixtures/** --coverage.exclude=**/__fixtures__/** --coverage.exclude=**/*.config.ts --coverage.exclude=**/*.config.mts --coverage.exclude=**/*.config.cts --coverage.exclude=**/*.config.js --coverage.exclude=**/*.config.mjs --coverage.exclude=**/*.config.cjs --coverage.exclude=**/testing/** --coverage.exclude=**/app/**/route.ts --coverage.exclude=**/app/**/page.tsx --coverage.exclude=**/app/**/layout.tsx --coverage.exclude=**/testsupport/** --coverage.exclude=**/acceptance/** --coverage.exclude=**/e2e/** --coverage.exclude=**/node_modules/** --coverage.exclude=**/dist/** --coverage.exclude=**/build/** --coverage.exclude=**/out/** --coverage.exclude=**/.next/** --coverage.exclude=**/coverage/** --coverage.exclude=**/.backstop/**
     input_mode: none
+    producer: scripts/test-produce.sh
     stdout_artifact: .backstop/ts-test-results.json
     convert: scripts/test-to-sarif.sh
     scope_kind: project-wide
+    scope_handoff: file
     category: mechanism
     gate_type: test
     crash_guard: true
